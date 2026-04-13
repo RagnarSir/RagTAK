@@ -1,164 +1,327 @@
 # TAKStack
 
-Automated TAK Server installation script for Ubuntu 22.04 / 24.04, Debian, and Linux Mint.
-
-## What it installs
-
-| Component | Purpose |
-|-----------|---------|
-| TAK Server 5.7 | Tactical awareness server (CoT, mission packages, data sync) |
-| PostgreSQL 15 + PostGIS | Database backend |
-| Java 17 | TAK Server runtime |
-| Full PKI | Self-signed CA, server cert, admin cert, 5 client certs |
-| Let's Encrypt | Optional trusted SSL certificate (set `DOMAIN=`) |
-| MediaMTX | RTSP / HLS / WebRTC video streaming |
-| Mumble | Low-latency voice communications |
-| Node-RED | Flow-based automation and TAK data integration |
-| WireGuard | VPN tunnel — client configs and QR codes generated automatically |
-| UFW | Firewall configured for all services |
+A single script that sets up a complete tactical communications server — ready for ATAK, WinTAK, voice, video, and VPN.
 
 ---
 
-## Prerequisites
+## What does it do?
 
-1. Create a free account at [tak.gov](https://tak.gov)
-2. Download the TAK Server package: `takserver_5.7-RELEASE8_all.deb`
-3. Place the `.deb` in the same directory as `install_tak.sh`
+Running one command installs and configures everything:
+
+- **TAK Server** — the core. ATAK and WinTAK devices connect here to share locations, maps, and messages
+- **Mumble** — low-latency voice comms, like a self-hosted TeamSpeak
+- **Node-RED** — visual automation tool to connect TAK data to other systems
+- **WireGuard** — VPN so your devices connect securely over the internet
+- **MediaMTX** — video streaming (RTSP/HLS/WebRTC) for drone feeds and cameras
+- **Certificates** — automatically generated so all connections are encrypted
+- **Firewall** — configured automatically
 
 ---
 
-## Usage
+## Before you start
 
-### Basic install (self-signed certificates)
+### 1. Get the TAK Server package
+
+TAK Server is free but requires registration — it is export-controlled software.
+
+1. Go to [tak.gov](https://tak.gov) and create a free account
+2. Navigate to **Products → TAK Server**
+3. Download the file named `takserver_5.7-RELEASE8_all.deb`
+4. Put that file in the same folder as `install_tak.sh`
+
+### 2. Check your system
+
+This script works on:
+- Ubuntu 22.04 or 24.04
+- Debian 11 or 12
+- Linux Mint 21+
+
+It does **not** work on Windows or macOS (run it on a Linux server or VM).
+
+### 3. If you are using a VPS (cloud server)
+
+Your VPS provider has its own firewall separate from the one on your server. You need to open these ports in your provider's control panel **before** running the script:
+
+| Port | Protocol | What it's for |
+|------|----------|---------------|
+| 22 | TCP | SSH — **keep this open or you will lose access** |
+| 8089 | TCP | ATAK / WinTAK connections |
+| 8443 | TCP | Web admin panel |
+| 8446 | TCP | Certificate enrollment |
+| 8554 | TCP + UDP | Video streaming (RTSP) |
+| 8888 | TCP | Video streaming (HLS) |
+| 8889 | TCP | Video streaming (WebRTC) |
+| 64738 | TCP + UDP | Mumble voice |
+| 1880 | TCP | Node-RED |
+| 51820 | UDP | WireGuard VPN |
+
+> Where to find this setting: AWS → Security Groups, DigitalOcean → Firewall, Hetzner → Firewall, Vultr → Firewall Rules.
+
+---
+
+## Installation
+
+### Option A — Basic install (no domain name)
+
+Use this if you just have an IP address.
+
 ```bash
 sudo bash install_tak.sh
 ```
 
-### With Let's Encrypt (requires a domain pointed at the server)
+### Option B — With a domain name (recommended for internet-facing servers)
+
+If you have a domain name pointed at your server, the script will automatically get a trusted SSL certificate from Let's Encrypt. This means:
+- No certificate warnings in the browser
+- ATAK connects without needing to import a trust store
+
 ```bash
 DOMAIN=tak.example.com sudo bash install_tak.sh
 ```
 
-### With Let's Encrypt + email notifications
+Add an email to receive expiry notifications:
 ```bash
 DOMAIN=tak.example.com LE_EMAIL=you@example.com sudo bash install_tak.sh
 ```
 
-### Custom options
-All options can be combined:
+> The script takes about 2–5 minutes. Do not close the terminal while it runs.
+
+---
+
+## After installation
+
+At the end of the script you will see a summary like this:
+
+```
+============================================================
+  TAK Server Installation Complete
+============================================================
+
+  Service status
+    TAK Server : active
+    PostgreSQL : active
+    Mumble     : active
+    Node-RED   : active
+    WireGuard  : active
+    MediaMTX   : active
+
+  Endpoints
+    Web Admin  : https://192.168.1.11:8443
+    CoT/ATAK   : ssl://192.168.1.11:8089
+    Mumble     : 192.168.1.11:64738
+    Node-RED   : http://192.168.1.11:1880
+
+  WireGuard
+    Configs    : wg-client1.conf, wg-client1.png ...
+
+  Mumble
+    Superuser  : SuperUser / <generated-password>
+
+  Node-RED
+    Username   : admin
+    Password   : <generated-password>
+```
+
+**Save this output** — it contains generated passwords you will need.
+
+---
+
+## Connecting your browser (web admin)
+
+The TAK web admin uses client certificates for login. You need to import two files into Firefox before it will let you in.
+
+### Step 1 — Import the certificate authority
+
+1. Open Firefox → type `about:preferences#privacy` in the address bar
+2. Scroll down to **Certificates** → click **View Certificates**
+3. Go to the **Authorities** tab → click **Import**
+4. Select `root-ca.pem` from the install folder
+5. Check **Trust this CA to identify websites** → click OK
+
+### Step 2 — Import your admin certificate
+
+1. Still in the Certificate Manager → go to **Your Certificates** tab
+2. Click **Import** → select `tak-admin.p12`
+3. Password: `atakatak`
+
+### Step 3 — Open the admin panel
+
+Close and reopen Firefox completely, then go to:
+```
+https://<your-server-ip>:8443
+```
+
+Firefox will ask which certificate to use — select `tak-admin`.
+
+> **With Let's Encrypt:** Skip step 1 (no CA import needed). Only import `tak-admin.p12`.
+
+---
+
+## Connecting ATAK (Android)
+
+Each device needs its own client certificate. The script generates five: `client1.p12` through `client5.p12`. Use one per device.
+
+### Without Let's Encrypt
+
+1. Copy these two files to your phone (USB cable, email, or cloud storage):
+   - `truststore-root.p12` — password: `atakatak`
+   - `client1.p12` — password: `atakatak`
+
+2. In ATAK: **Settings → Network Preferences → TAK Servers → +**
+3. Fill in:
+   - Server address: your server IP or domain
+   - Port: `8089`
+   - Protocol: `SSL`
+   - Trust Store: `truststore-root.p12` — password: `atakatak`
+   - Client Certificate: `client1.p12` — password: `atakatak`
+4. Tap OK — the dot next to the server should turn green
+
+### With Let's Encrypt
+
+1. Copy only `client1.p12` to your phone
+2. Follow the same steps above but leave the Trust Store field empty
+3. Connect to your domain name instead of an IP
+
+---
+
+## Connecting WinTAK (Windows)
+
+Same files and same steps as ATAK above. Use `client2.p12` (or any unused client cert).
+
+To create a named user account for WinTAK:
 ```bash
-DOMAIN=tak.example.com \
-MUMBLE_SERVER_NAME="My Unit" \
-MUMBLE_PASS="voicepassword" \
-NODERED_USER=admin \
-NODERED_PASS=mypassword \
+sudo java -jar /opt/tak/utils/UserManager.jar usermod -A -p 'YourPassword' WinTAK
+```
+
+---
+
+## Connecting WireGuard (VPN)
+
+WireGuard lets your devices connect to the TAK server securely over the internet. Once connected via VPN, devices reach TAK at `10.13.13.1` instead of the public IP.
+
+The script generates a config file and a QR code for each device in the install folder:
+
+| File | For |
+|------|-----|
+| `wg-tak-admin.conf` + `.png` | Admin workstation |
+| `wg-client1.conf` + `.png` | ATAK device 1 |
+| `wg-client2.conf` + `.png` | ATAK device 2 |
+| `wg-client3.conf` + `.png` | ATAK device 3 |
+| `wg-client4.conf` + `.png` | ATAK device 4 |
+| `wg-client5.conf` + `.png` | ATAK device 5 |
+| `wg-wintak.conf` + `.png` | WinTAK workstation |
+
+### Android / iOS
+1. Install the **WireGuard** app from the Play Store or App Store
+2. Tap **+** → **Scan from QR code**
+3. Scan the `.png` file for that device
+4. Toggle the tunnel on
+
+### Windows / Linux / macOS
+1. Install WireGuard from [wireguard.com/install](https://www.wireguard.com/install/)
+2. Click **Import tunnel(s) from file** → select the `.conf` file
+3. Click **Activate**
+
+> By default only traffic to `10.13.13.0/24` goes through the tunnel (split tunnel). If you want all internet traffic routed through the server, change `AllowedIPs` in the `.conf` file to `0.0.0.0/0, ::/0`.
+
+---
+
+## Connecting Mumble (voice)
+
+1. Download the Mumble client from [mumble.info](https://www.mumble.info)
+2. Add a new server:
+   - Address: your server IP or domain
+   - Port: `64738`
+   - Username: anything you like
+   - Password: the server password from the install summary (if one was set)
+3. Connect
+
+The **SuperUser** password printed in the summary lets you create channels and manage permissions from the Mumble client.
+
+---
+
+## Node-RED
+
+Open in any browser:
+```
+http://<your-server>:1880
+```
+
+Log in with the username and password from the install summary.
+
+Node-RED lets you visually wire together TAK events, MQTT, webhooks, databases, and more — no coding required for basic flows.
+
+---
+
+## Customisation
+
+You can override any of these before running the script:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DOMAIN` | *(empty)* | Your domain name — enables Let's Encrypt |
+| `LE_EMAIL` | *(empty)* | Email for Let's Encrypt expiry warnings |
+| `CERT_PASS` | `atakatak` | Password for all generated certificates |
+| `MUMBLE_SERVER_NAME` | `TAK Mumble` | Name shown in Mumble server browser |
+| `MUMBLE_PASS` | *(empty)* | Mumble server password (empty = open server) |
+| `MUMBLE_MAX_USERS` | `50` | Max simultaneous Mumble connections |
+| `NODERED_USER` | `admin` | Node-RED login username |
+| `NODERED_PASS` | *(auto)* | Node-RED login password |
+| `WG_PORT` | `51820` | WireGuard listen port |
+| `WG_SUBNET` | `10.13.13` | VPN subnet — server gets `.1`, clients get `.2+` |
+| `WG_DNS` | `1.1.1.1` | DNS server sent to VPN clients |
+
+Example:
+```bash
+DOMAIN=tak.myunit.com \
+MUMBLE_SERVER_NAME="Alpha Team" \
+MUMBLE_PASS="voicepass" \
+NODERED_PASS="flowpass" \
 sudo bash install_tak.sh
 ```
 
 ---
 
-## Configuration variables
+## Troubleshooting
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DOMAIN` | *(empty)* | Domain name — enables Let's Encrypt |
-| `LE_EMAIL` | *(empty)* | Email for Let's Encrypt expiry notifications |
-| `CERT_PASS` | `atakatak` | Password for all PKI certificates |
-| `MUMBLE_SERVER_NAME` | `TAK Mumble` | Mumble server display name |
-| `MUMBLE_PASS` | *(empty)* | Mumble server password (empty = no password) |
-| `MUMBLE_MAX_USERS` | `50` | Maximum simultaneous Mumble users |
-| `NODERED_USER` | `admin` | Node-RED admin username |
-| `NODERED_PASS` | *(auto-generated)* | Node-RED admin password |
-| `WG_PORT` | `51820` | WireGuard listen port |
-| `WG_SUBNET` | `10.13.13` | WireGuard VPN subnet (/24) |
-| `WG_DNS` | `1.1.1.1` | DNS server pushed to WireGuard clients |
-
----
-
-## Ports
-
-| Port | Protocol | Service |
-|------|----------|---------|
-| 8089 | TCP | ATAK / WinTAK CoT (SSL) |
-| 8443 | TCP | TAK web admin |
-| 8446 | TCP | Certificate enrollment |
-| 8554 | TCP/UDP | MediaMTX RTSP video |
-| 8888 | TCP | MediaMTX HLS video |
-| 8889 | TCP | MediaMTX WebRTC video |
-| 64738 | TCP/UDP | Mumble voice |
-| 1880 | TCP | Node-RED UI |
-| 51820 | UDP | WireGuard VPN |
-
-> **VPS users:** Open all required ports in your provider's firewall (AWS Security Groups, DigitalOcean Firewall, etc.) in addition to the UFW rules the script configures.
-
----
-
-## Connecting clients
-
-### ATAK (Android)
-**Without Let's Encrypt:**
-- Trust Store: `truststore-root.p12` — password: `atakatak`
-- Client Cert: `client1.p12` — password: `atakatak`
-- Server: `ssl://<server-ip>:8089`
-
-**With Let's Encrypt:**
-- Client Cert: `client1.p12` — password: `atakatak`
-- Server: `ssl://<your-domain>:8089`
-- No trust store needed
-
-Use a separate client cert per device (`client1` through `client5`).
-
-### WinTAK (Windows)
-Same as ATAK. Create a named user account:
+**TAK Server not starting**
 ```bash
-sudo java -jar /opt/tak/utils/UserManager.jar usermod -A -p 'YourPassword' WinTAK
+sudo systemctl status takserver
+sudo tail -50 /opt/tak/logs/takserver-messaging.log
 ```
 
-### Mumble
-Connect to `<server>:64738` with any Mumble client. The SuperUser password is printed at the end of the install.
+**ATAK shows "Socket is closed" or "IO Error"**
+- Make sure the phone is on WiFi (not mobile data) or connected via WireGuard
+- Confirm port 8089 is open on all firewalls (both UFW and your VPS provider's)
+- Use `truststore-root.p12` as the trust store, not `root-ca.pem`
 
-### Node-RED
-Open `http://<server>:1880` — credentials printed at end of install.
+**Browser shows certificate error**
+- Make sure you imported both `root-ca.pem` (Authorities) and `tak-admin.p12` (Your Certificates)
+- Close and reopen Firefox completely after importing
 
-### WireGuard
-Client configs and QR codes are written to the install directory:
-
-| File | Device |
-|------|--------|
-| `wg-tak-admin.conf` / `.png` | Admin workstation |
-| `wg-client1.conf` / `.png` | ATAK device 1 |
-| `wg-client2.conf` / `.png` | ATAK device 2 |
-| `wg-wintak.conf` / `.png` | WinTAK workstation |
-
-- **Android / iOS:** Scan the `.png` QR code in the WireGuard app
-- **Windows / Linux:** Import the `.conf` file in the WireGuard client
-
-Once connected, reach TAK at `10.13.13.1` instead of the public IP.
-
----
-
-## Web admin
-
-Import into Firefox before opening the admin UI:
-1. **Authorities tab** → import `root-ca.pem` → trust for websites
-2. **Your Certificates tab** → import `tak-admin.p12` → password: `atakatak`
-
-Then open: `https://<server>:8443`
-
-> With Let's Encrypt, only `tak-admin.p12` needs to be imported.
-
----
-
-## Logs
-
+**Mumble not connecting**
 ```bash
-sudo tail -f /opt/tak/logs/takserver-messaging.log
-sudo journalctl -u mumble-server -f
-sudo journalctl -u node-red -f
-sudo journalctl -u wg-quick@wg0 -f
+sudo systemctl status mumble-server
+sudo journalctl -u mumble-server -n 50
 ```
+
+**Node-RED not loading**
+```bash
+sudo systemctl status node-red
+sudo journalctl -u node-red -n 50
+```
+
+**WireGuard not connecting**
+```bash
+sudo systemctl status wg-quick@wg0
+sudo journalctl -u wg-quick@wg0 -n 50
+```
+
+---
 
 ## Clean reinstall
+
+If something goes wrong and you want to start fresh:
 
 ```bash
 sudo systemctl stop takserver mediamtx mumble-server node-red wg-quick@wg0
