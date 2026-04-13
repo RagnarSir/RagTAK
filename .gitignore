@@ -1,0 +1,15 @@
+# TAK Server package (large binary, download from tak.gov)
+*.deb
+
+# Generated certificates and keys — do not commit
+*.p12
+*.pem
+*.jks
+*.key
+*.csr
+*.crt
+wg-*.conf
+wg-*.png
+
+# TAK ignite data
+ignite/
