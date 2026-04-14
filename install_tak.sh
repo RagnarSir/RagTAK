@@ -280,6 +280,11 @@ NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
 TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
 
+# OpenVPN (set INSTALL_OPENVPN=yes/no to skip the interactive prompt)
+OPENVPN_PORT="${OPENVPN_PORT:-1194}"
+OPENVPN_PROTO="${OPENVPN_PROTO:-udp}"
+OPENVPN_SUBNET="${OPENVPN_SUBNET:-10.8.0}"  # /24 — server gets .1, clients get .2+
+
 # Ports
 TAK_COT_PORT=8089
 TAK_ADMIN_PORT=8443
@@ -333,6 +338,18 @@ PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
     || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
     || hostname -I | awk '{print $1}')"
 [[ -n "$PUBLIC_IP" ]] || die "Could not determine public IP. Set it manually: PUBLIC_IP=x.x.x.x sudo bash $0"
+
+# Ask about OpenVPN unless pre-answered via env var
+if [[ -z "${INSTALL_OPENVPN:-}" ]]; then
+    echo ""
+    echo "  OpenVPN provides an extra security layer: all services (TAK, Mumble,"
+    echo "  Node-RED, admin panel) are only reachable through the VPN tunnel."
+    echo "  Clients (ATAK, iTAK, WinTAK) use the OpenVPN Connect app to connect first."
+    echo ""
+    read -rp "  Install OpenVPN? [y/N] " _ovpn_ans
+    [[ "$_ovpn_ans" =~ ^[Yy]$ ]] && INSTALL_OPENVPN=yes || INSTALL_OPENVPN=no
+    echo ""
+fi
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -916,6 +933,8 @@ SERVICES = [
     ('mumble-server',      'Mumble'),
     ('node-red',           'Node-RED'),
 ]
+if os.environ.get('OPENVPN_INSTALLED'):
+    SERVICES.append(('openvpn@server', 'OpenVPN'))
 SAFE_SERVICES = {s for s, _ in SERVICES}
 
 
@@ -1586,6 +1605,105 @@ systemctl is-active --quiet takadmin && \
     success "RagTak Admin Panel running on port ${TAKADMIN_PORT}." || \
     warn "RagTak Admin Panel may not have started — check: journalctl -u takadmin"
 
+# ─── 14. OpenVPN ─────────────────────────────────────────────────────────────
+if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
+    info "Installing OpenVPN..."
+    apt-get install -y openvpn easy-rsa
+
+    EASYRSA_DIR="/etc/openvpn/easy-rsa"
+    make-cadir "$EASYRSA_DIR"
+
+    # Build PKI — separate from TAK certs
+    cd "$EASYRSA_DIR"
+    ./easyrsa init-pki </dev/null
+    ./easyrsa --batch build-ca nopass </dev/null
+    ./easyrsa --batch gen-req server nopass </dev/null
+    ./easyrsa --batch sign-req server server </dev/null
+
+    # TLS authentication key
+    openvpn --genkey secret /etc/openvpn/ta.key
+
+    # Server config — ECDH avoids slow DH parameter generation
+    mkdir -p /var/log/openvpn
+    cat > /etc/openvpn/server.conf << EOF
+port ${OPENVPN_PORT}
+proto ${OPENVPN_PROTO}
+dev tun
+ca   ${EASYRSA_DIR}/pki/ca.crt
+cert ${EASYRSA_DIR}/pki/issued/server.crt
+key  ${EASYRSA_DIR}/pki/private/server.key
+dh none
+ecdh-curve prime256v1
+server ${OPENVPN_SUBNET}.0 255.255.255.0
+push "route ${OPENVPN_SUBNET}.0 255.255.255.0"
+keepalive 10 120
+tls-auth /etc/openvpn/ta.key 0
+cipher AES-256-GCM
+auth SHA256
+persist-key
+persist-tun
+status /var/log/openvpn/status.log
+log-append /var/log/openvpn/openvpn.log
+verb 3
+EOF
+
+    # Generate one client .ovpn per device (inline certs — single file to import)
+    VPN_ENDPOINT="${DOMAIN:-$PUBLIC_IP}"
+    VPN_CLIENTS=("tak-admin" "${CLIENT_NAMES[@]}" "wintak")
+    for CLIENT in "${VPN_CLIENTS[@]}"; do
+        cd "$EASYRSA_DIR"
+        ./easyrsa --batch gen-req  "$CLIENT" nopass </dev/null
+        ./easyrsa --batch sign-req client "$CLIENT" </dev/null
+
+        # Inline all keys/certs so the .ovpn is a single self-contained import file
+        {
+            cat << OVPN_HEADER
+client
+dev tun
+proto ${OPENVPN_PROTO}
+remote ${VPN_ENDPOINT} ${OPENVPN_PORT}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+key-direction 1
+cipher AES-256-GCM
+auth SHA256
+verb 3
+OVPN_HEADER
+            echo "<ca>"
+            cat "${EASYRSA_DIR}/pki/ca.crt"
+            echo "</ca>"
+            echo "<cert>"
+            openssl x509 -in "${EASYRSA_DIR}/pki/issued/${CLIENT}.crt"
+            echo "</cert>"
+            echo "<key>"
+            cat "${EASYRSA_DIR}/pki/private/${CLIENT}.key"
+            echo "</key>"
+            echo "<tls-auth>"
+            cat /etc/openvpn/ta.key
+            echo "</tls-auth>"
+        } > "${CERT_OUT_DIR}/${CLIENT}.ovpn"
+        chmod 600 "${CERT_OUT_DIR}/${CLIENT}.ovpn"
+        success "  OpenVPN config: ${CERT_OUT_DIR}/${CLIENT}.ovpn"
+    done
+
+    # Fix ownership so user can SCP the new .ovpn files
+    chown -R "${REAL_USER}:${REAL_USER}" "${CERT_OUT_DIR}" 2>/dev/null || true
+
+    cd /
+    systemctl enable --now openvpn@server
+    sleep 2
+    systemctl is-active --quiet openvpn@server && \
+        success "OpenVPN running on port ${OPENVPN_PORT}/${OPENVPN_PROTO}." || \
+        warn "OpenVPN may not have started — check: journalctl -u openvpn@server"
+
+    # Tell the admin panel that OpenVPN is installed so it shows in the service list
+    echo "Environment=OPENVPN_INSTALLED=1" >> /etc/systemd/system/takadmin.service
+    systemctl daemon-reload
+    systemctl restart takadmin
+fi
+
 # ─── 15. Firewall ─────────────────────────────────────────────────────────────
 info "Configuring firewall..."
 # Always allow the actual SSH port — read from sshd_config to handle non-standard ports
@@ -1594,19 +1712,41 @@ SSH_PORT="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2
 SSH_PORT="${SSH_PORT:-22}"
 ufw allow "${SSH_PORT}/tcp" comment "SSH"
 [[ "$SSH_PORT" != "22" ]] && ufw allow ssh 2>/dev/null || true   # also allow 22 if non-standard
-ufw allow "${NODERED_PORT}/tcp"   comment "Node-RED"
-ufw allow "${MUMBLE_PORT}/tcp"    comment "Mumble voice"
-ufw allow "${MUMBLE_PORT}/udp"    comment "Mumble voice/UDP"
-ufw allow "${TAK_COT_PORT}/tcp"   comment "TAK CoT"
-ufw allow "${TAK_ADMIN_PORT}/tcp" comment "TAK web admin"
-ufw allow "${TAK_ENROLL_PORT}/tcp" comment "TAK cert enrollment"
-if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
-    ufw allow "${RTSP_PORT}/tcp"  comment "MediaMTX RTSP"
-    ufw allow "${RTSP_PORT}/udp"  comment "MediaMTX RTSP/UDP"
-    ufw allow "${HLS_PORT}/tcp"   comment "MediaMTX HLS"
-    ufw allow "${WEBRTC_PORT}/tcp" comment "MediaMTX WebRTC"
+
+if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
+    # OpenVPN installed: only SSH + VPN port are reachable from the internet.
+    # All services are locked to the VPN subnet.
+    ufw allow "${OPENVPN_PORT}/${OPENVPN_PROTO}"  comment "OpenVPN"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${NODERED_PORT}"    proto tcp comment "Node-RED (VPN)"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${MUMBLE_PORT}"     proto tcp comment "Mumble voice (VPN)"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${MUMBLE_PORT}"     proto udp comment "Mumble voice/UDP (VPN)"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${TAK_COT_PORT}"    proto tcp comment "TAK CoT (VPN)"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${TAK_ADMIN_PORT}"  proto tcp comment "TAK web admin (VPN)"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${TAK_ENROLL_PORT}" proto tcp comment "TAK enrollment (VPN)"
+    ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${TAKADMIN_PORT}"   proto tcp comment "RagTAK Admin Panel (VPN)"
+    if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${RTSP_PORT}"    proto tcp comment "MediaMTX RTSP (VPN)"
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${RTSP_PORT}"    proto udp comment "MediaMTX RTSP/UDP (VPN)"
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${HLS_PORT}"     proto tcp comment "MediaMTX HLS (VPN)"
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${WEBRTC_PORT}"  proto tcp comment "MediaMTX WebRTC (VPN)"
+    fi
+else
+    # No VPN — all service ports open directly
+    ufw allow "${NODERED_PORT}/tcp"    comment "Node-RED"
+    ufw allow "${MUMBLE_PORT}/tcp"     comment "Mumble voice"
+    ufw allow "${MUMBLE_PORT}/udp"     comment "Mumble voice/UDP"
+    ufw allow "${TAK_COT_PORT}/tcp"    comment "TAK CoT"
+    ufw allow "${TAK_ADMIN_PORT}/tcp"  comment "TAK web admin"
+    ufw allow "${TAK_ENROLL_PORT}/tcp" comment "TAK cert enrollment"
+    if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
+        ufw allow "${RTSP_PORT}/tcp"   comment "MediaMTX RTSP"
+        ufw allow "${RTSP_PORT}/udp"   comment "MediaMTX RTSP/UDP"
+        ufw allow "${HLS_PORT}/tcp"    comment "MediaMTX HLS"
+        ufw allow "${WEBRTC_PORT}/tcp" comment "MediaMTX WebRTC"
+    fi
+    ufw allow "${TAKADMIN_PORT}/tcp"   comment "RagTAK Admin Panel"
 fi
-ufw allow "${TAKADMIN_PORT}/tcp"   comment "RagTAK Admin Panel"
+
 ufw --force enable
 success "Firewall rules applied."
 
@@ -1644,8 +1784,21 @@ echo "    Node-RED   : $(systemctl is-active node-red 2>/dev/null || echo 'unkno
 [[ -z "${SKIP_MEDIAMTX:-}" ]] && \
 echo "    MediaMTX   : $(systemctl is-active mediamtx 2>/dev/null || echo 'unknown')"
 echo "    RagTak     : $(systemctl is-active takadmin 2>/dev/null || echo 'unknown')"
+[[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && \
+echo "    OpenVPN    : $(systemctl is-active openvpn@server 2>/dev/null || echo 'unknown')"
 echo ""
 echo -e "  ${CYAN}Endpoints${NC}"
+if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
+echo "    NOTE: All services are VPN-only. Connect OpenVPN first, then use ${OPENVPN_SUBNET}.1"
+echo "    Web Admin  : https://${OPENVPN_SUBNET}.1:${TAK_ADMIN_PORT}"
+echo "    CoT/ATAK   : ssl://${OPENVPN_SUBNET}.1:${TAK_COT_PORT}"
+echo "    Enrollment : https://${OPENVPN_SUBNET}.1:${TAK_ENROLL_PORT}"
+[[ -z "${SKIP_MEDIAMTX:-}" ]] && \
+echo "    RTSP Video : rtsp://${OPENVPN_SUBNET}.1:${RTSP_PORT}/<stream-name>"
+echo "    Mumble     : ${OPENVPN_SUBNET}.1:${MUMBLE_PORT}"
+echo "    Node-RED   : http://${OPENVPN_SUBNET}.1:${NODERED_PORT}"
+echo "    RagTak     : http://${OPENVPN_SUBNET}.1:${TAKADMIN_PORT}"
+else
 echo "    Web Admin  : https://${DISPLAY_HOST}:${TAK_ADMIN_PORT}"
 echo "    CoT/ATAK   : ssl://${DISPLAY_HOST}:${TAK_COT_PORT}"
 echo "    Enrollment : https://${DISPLAY_HOST}:${TAK_ENROLL_PORT}"
@@ -1654,6 +1807,7 @@ echo "    RTSP Video : rtsp://${DISPLAY_HOST}:${RTSP_PORT}/<stream-name>"
 echo "    Mumble     : ${DISPLAY_HOST}:${MUMBLE_PORT}"
 echo "    Node-RED   : http://${DISPLAY_HOST}:${NODERED_PORT}"
 echo "    RagTak     : http://${DISPLAY_HOST}:${TAKADMIN_PORT}"
+fi
 [[ $USE_LE -eq 1 ]] && \
 echo "" && \
 echo -e "  ${CYAN}Let's Encrypt${NC}" && \
@@ -1694,9 +1848,25 @@ echo "    Username   : ${NODERED_USER}"
 echo "    Password   : ${NODERED_PASS}"
 echo ""
 echo -e "  ${CYAN}RagTak Admin Panel${NC}"
+if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
+echo "    URL        : http://${OPENVPN_SUBNET}.1:${TAKADMIN_PORT}  (VPN only)"
+else
 echo "    URL        : http://${DISPLAY_HOST}:${TAKADMIN_PORT}"
+fi
 echo "    Username   : Admin"
 echo "    Password   : ${TAKADMIN_PASS}"
+if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
+echo ""
+echo -e "  ${CYAN}OpenVPN${NC}"
+echo "    Port       : ${OPENVPN_PORT}/${OPENVPN_PROTO^^}"
+echo "    VPN subnet : ${OPENVPN_SUBNET}.0/24  (server: ${OPENVPN_SUBNET}.1)"
+echo "    Configs    : (in ${CERT_OUT_DIR})"
+for _c in "tak-admin" "${CLIENT_NAMES[@]}" "wintak"; do
+    echo "      ${_c}.ovpn"
+done
+echo "    Import into OpenVPN Connect app (Android / iOS / Windows / Linux)"
+echo "    Once connected: use ${OPENVPN_SUBNET}.1 as the TAK server address"
+fi
 echo ""
 echo -e "  ${YELLOW}Logs:${NC} sudo tail -f /opt/tak/logs/takserver-messaging.log"
 echo ""

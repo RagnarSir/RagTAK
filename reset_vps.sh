@@ -25,7 +25,7 @@ read -rp "Type YES to continue: " confirm
 
 # ─── 1. Stop and disable all services ────────────────────────────────────────
 info "Stopping services..."
-for svc in takserver takadmin node-red mediamtx mumble-server wg-quick@wg0; do
+for svc in takserver takadmin node-red mediamtx mumble-server wg-quick@wg0 openvpn@server; do
     systemctl stop    "$svc" 2>/dev/null || true
     systemctl disable "$svc" 2>/dev/null || true
 done
@@ -109,6 +109,14 @@ ip link delete wg0 2>/dev/null || true
 rm -rf /etc/wireguard
 apt-get purge -y wireguard wireguard-tools qrencode 2>/dev/null || true
 success "WireGuard removed."
+
+# ─── 8b. OpenVPN ─────────────────────────────────────────────────────────────
+info "Removing OpenVPN..."
+systemctl stop "openvpn@server" 2>/dev/null || true
+systemctl disable "openvpn@server" 2>/dev/null || true
+apt-get purge -y openvpn easy-rsa 2>/dev/null || true
+rm -rf /etc/openvpn /var/log/openvpn
+success "OpenVPN removed."
 
 # ─── 9. RagTAK Admin Panel ───────────────────────────────────────────────────
 info "Removing RagTAK admin panel..."

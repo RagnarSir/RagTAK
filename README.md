@@ -56,6 +56,9 @@ Your VPS provider has its own firewall separate from the one on your server. You
 | 64738 | TCP + UDP | Mumble voice |
 | 1880 | TCP | Node-RED |
 | 8080 | TCP | RagTAK Admin Panel |
+| 1194 | UDP | OpenVPN *(only if you chose to install it)* |
+
+> If you install OpenVPN, ports 8089, 8443, 8080, 1880, and 64738 are **not** needed in the provider firewall — they are blocked from the internet and only reachable through the VPN tunnel. Only open 22 (SSH) and 1194 (OpenVPN).
 
 > Where to find this setting: AWS → Security Groups, DigitalOcean → Firewall, Hetzner → Firewall, Vultr → Firewall Rules.
 
@@ -237,6 +240,40 @@ Each device needs its own client certificate. The script generates five: `client
 
 ---
 
+## Connecting via OpenVPN
+
+If you chose to install OpenVPN during setup, all services (TAK, Mumble, Node-RED, admin panel) are only reachable through the VPN tunnel. You must connect OpenVPN first, then connect ATAK/iTAK to `10.8.0.1` instead of the public IP.
+
+Client config files (one per device) are in the `certs/` folder:
+
+| File | For |
+|------|-----|
+| `tak-admin.ovpn` | Admin workstation |
+| `client1.ovpn` | ATAK device 1 |
+| `client2.ovpn` | ATAK device 2 |
+| `wintak.ovpn` | WinTAK workstation |
+
+### Android / iOS (ATAK, iTAK)
+
+1. Install **OpenVPN Connect** from the Play Store or App Store
+2. Tap **+** → **Import from file** → select the `.ovpn` file for that device
+3. Tap **Connect**
+4. In ATAK/iTAK, set the TAK server address to `10.8.0.1:8089` (VPN address, not public IP)
+
+### Windows / Linux
+
+1. Install OpenVPN from [openvpn.net](https://openvpn.net/community-downloads/)
+2. Import the `.ovpn` file and connect
+3. Set WinTAK server address to `10.8.0.1:8089`
+
+### Admin panel and Node-RED when using OpenVPN
+
+Once connected to VPN:
+- RagTAK Admin Panel: `http://10.8.0.1:8080`
+- Node-RED: `http://10.8.0.1:1880`
+
+---
+
 ## Connecting WinTAK (Windows)
 
 Same files and same steps as ATAK above. Use `client2.p12` (or any unused client cert).
@@ -318,6 +355,10 @@ You can override any of these before running the script:
 | `NODERED_PASS` | *(auto-generated)* | Node-RED login password |
 | `TAKADMIN_PORT` | `8080` | RagTak Admin Panel port |
 | `TAKADMIN_PASS` | *(auto-generated)* | RagTak Admin Panel password |
+| `INSTALL_OPENVPN` | *(prompt)* | Set to `yes` or `no` to skip the prompt |
+| `OPENVPN_PORT` | `1194` | OpenVPN listen port |
+| `OPENVPN_PROTO` | `udp` | OpenVPN protocol (`udp` or `tcp`) |
+| `OPENVPN_SUBNET` | `10.8.0` | VPN subnet — server gets `.1`, clients get `.2+` |
 | `SKIP_MEDIAMTX` | *(unset)* | Set to any value to skip MediaMTX install |
 
 Example:
@@ -364,6 +405,17 @@ sudo journalctl -u mumble-server -n 50
 sudo systemctl status node-red
 sudo journalctl -u node-red -n 50
 ```
+
+**OpenVPN not connecting**
+```bash
+sudo systemctl status openvpn@server
+sudo journalctl -u openvpn@server -n 50
+```
+
+**Can't reach TAK / admin panel after connecting OpenVPN**
+- Confirm the tunnel is up: `ip addr show tun0` should show a `10.8.0.x` address
+- Use `10.8.0.1` as the server address, not the public IP
+- Check UFW allows traffic from the VPN subnet: `sudo ufw status`
 
 ---
 
