@@ -1280,44 +1280,146 @@ _BASE = '''<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>RagTak Admin Panel</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <title>RagTAK Admin</title>
   <style>
-    .ok      { color: #2d9e5a; font-weight: bold; }
-    .failed  { color: #c0392b; font-weight: bold; }
-    .inactive{ color: #888; }
-    .unknown { color: #aaa; }
-    .flash-success { border-left: 4px solid #2d9e5a; background: #eafaf1;
-                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
-    .flash-error   { border-left: 4px solid #c0392b; background: #fdedec;
-                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
-    .flash-warning { border-left: 4px solid #e67e22; background: #fef9e7;
-                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
-    .flash-info    { border-left: 4px solid #2980b9; background: #eaf4fb;
-                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
-    button.sm { padding: .2rem .6rem; font-size: .85rem; margin: 0; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:       #0d1117;
+      --surface:  #161b22;
+      --border:   #30363d;
+      --text:     #e6edf3;
+      --muted:    #8b949e;
+      --accent:   #238636;
+      --accent-h: #2ea043;
+      --danger:   #da3633;
+      --warn:     #d29922;
+      --info:     #1f6feb;
+      --link:     #58a6ff;
+      --radius:   6px;
+      --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body { background: var(--bg); color: var(--text); font-family: var(--font);
+           font-size: 14px; line-height: 1.6; min-height: 100vh; }
+    a { color: var(--link); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code { background: #21262d; padding: .1em .4em; border-radius: 3px;
+           font-size: .9em; font-family: monospace; }
+
+    /* Nav */
+    nav { background: var(--surface); border-bottom: 1px solid var(--border);
+          padding: 0 1.5rem; display: flex; align-items: center;
+          justify-content: space-between; height: 52px; }
+    .nav-brand { font-weight: 700; font-size: 1rem; color: var(--text);
+                 display: flex; align-items: center; gap: .5rem; }
+    .nav-brand span { color: var(--accent-h); }
+    .nav-links { display: flex; gap: 1.5rem; }
+    .nav-links a { color: var(--muted); font-size: .875rem; }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .nav-links a.active { color: var(--text); border-bottom: 2px solid var(--accent-h);
+                          padding-bottom: 2px; }
+
+    /* Layout */
+    .container { max-width: 1000px; margin: 0 auto; padding: 2rem 1.5rem; }
+
+    /* Flash messages */
+    .flash { padding: .75rem 1rem; border-radius: var(--radius);
+             margin-bottom: 1rem; font-size: .875rem; border: 1px solid; }
+    .flash-success { background: #0d2818; border-color: #238636; color: #3fb950; }
+    .flash-error   { background: #2d1318; border-color: #da3633; color: #f85149; }
+    .flash-warning { background: #2d2008; border-color: #d29922; color: #e3b341; }
+    .flash-info    { background: #0d1f38; border-color: #1f6feb; color: #58a6ff; }
+
+    /* Cards */
+    .card { background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); margin-bottom: 1rem; }
+    .card-header { padding: .75rem 1rem; border-bottom: 1px solid var(--border);
+                   font-weight: 600; font-size: .875rem; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: .05em; }
+    .card-body { padding: 1rem; }
+
+    /* Grid */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 1rem; }
+
+    /* Service status tiles */
+    .svc-tile { background: var(--surface); border: 1px solid var(--border);
+                border-radius: var(--radius); padding: 1rem;
+                display: flex; flex-direction: column; gap: .5rem; }
+    .svc-name { font-weight: 600; font-size: .875rem; }
+    .badge { display: inline-block; padding: .2em .6em; border-radius: 20px;
+             font-size: .75rem; font-weight: 600; }
+    .badge-ok      { background: #0d2818; color: #3fb950; border: 1px solid #238636; }
+    .badge-failed  { background: #2d1318; color: #f85149; border: 1px solid #da3633; }
+    .badge-inactive{ background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+    .badge-unknown { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
+
+    /* Buttons */
+    .btn { display: inline-block; padding: .4rem .9rem; border-radius: var(--radius);
+           font-size: .875rem; font-weight: 500; cursor: pointer; border: 1px solid;
+           text-align: center; line-height: 1.4; }
+    .btn-primary { background: var(--accent); border-color: var(--accent-h);
+                   color: #fff; }
+    .btn-primary:hover { background: var(--accent-h); text-decoration: none; }
+    .btn-secondary { background: transparent; border-color: var(--border);
+                     color: var(--text); }
+    .btn-secondary:hover { border-color: var(--muted); text-decoration: none; }
+    .btn-sm { padding: .25rem .6rem; font-size: .8rem; }
+    button.btn { font-family: var(--font); }
+
+    /* Forms */
+    input[type=text], input[type=password] {
+      background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: var(--radius); padding: .5rem .75rem; font-size: .875rem;
+      width: 100%; font-family: var(--font); }
+    input:focus { outline: none; border-color: var(--link); }
+    label { display: block; margin-bottom: .25rem; font-size: .875rem; color: var(--muted); }
+    .form-group { margin-bottom: 1rem; }
+    .input-row { display: flex; gap: .5rem; }
+    .input-row input { flex: 1; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    th { text-align: left; padding: .6rem 1rem; color: var(--muted);
+         font-weight: 600; border-bottom: 1px solid var(--border);
+         font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; }
+    td { padding: .6rem 1rem; border-bottom: 1px solid var(--border); }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #1c2128; }
+
+    /* Login page */
+    .login-wrap { min-height: 100vh; display: flex; align-items: center;
+                  justify-content: center; background: var(--bg); }
+    .login-box { background: var(--surface); border: 1px solid var(--border);
+                 border-radius: var(--radius); padding: 2rem; width: 340px; }
+    .login-title { font-size: 1.25rem; font-weight: 700; margin-bottom: .25rem; }
+    .login-sub { color: var(--muted); font-size: .875rem; margin-bottom: 1.5rem; }
+    .login-err { color: #f85149; font-size: .875rem; margin-bottom: 1rem; }
+
+    h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; }
+    p  { color: var(--muted); font-size: .875rem; margin-bottom: .75rem; }
+    small { font-size: .8rem; color: var(--muted); }
   </style>
 </head>
 <body>
-<header class="container">
-  <nav>
-    <ul><li><strong>RagTak Admin Panel</strong></li></ul>
-    <ul>
-      <li><a href="/">Dashboard</a></li>
-      <li><a href="/users">Users</a></li>
-      <li><a href="/downloads">Downloads</a></li>
-      <li><a href="/logout">Logout</a></li>
-    </ul>
-  </nav>
-</header>
-<main class="container">
+{% if request.path != "/login" %}
+<nav>
+  <div class="nav-brand">&#9650; RagTAK <span>Admin</span></div>
+  <div class="nav-links">
+    <a href="/" {% if request.path == "/" %}class="active"{% endif %}>Dashboard</a>
+    <a href="/users" {% if request.path == "/users" %}class="active"{% endif %}>Users</a>
+    <a href="/downloads" {% if request.path == "/downloads" %}class="active"{% endif %}>Downloads</a>
+    <a href="/logout">Logout</a>
+  </div>
+</nav>
+{% endif %}
+<div class="container">
   {% with msgs = get_flashed_messages(with_categories=True) %}
     {% for cat, msg in msgs %}
-      <div class="flash-{{ cat }}">{{ msg }}</div>
+      <div class="flash flash-{{ cat }}">{{ msg }}</div>
     {% endfor %}
   {% endwith %}
   CONTENT_PLACEHOLDER
-</main>
+</div>
 </body>
 </html>'''
 
@@ -1326,57 +1428,60 @@ def page(content):
 
 
 T_LOGIN = page('''
-<article style="max-width:380px;margin:5rem auto">
-  <hgroup><h2>RagTak Admin Panel</h2><p>Sign in to continue</p></hgroup>
-  {% if err %}<p style="color:#c0392b">{{ err }}</p>{% endif %}
-  <form method="post">
-    <label>Username
-      <input type="text" name="username" autofocus required>
-    </label>
-    <label>Password
-      <input type="password" name="password" required>
-    </label>
-    <button type="submit">Sign in</button>
-  </form>
-</article>
+<div class="login-wrap">
+  <div class="login-box">
+    <div class="login-title">&#9650; RagTAK Admin</div>
+    <div class="login-sub">Sign in to continue</div>
+    {% if err %}<div class="login-err">{{ err }}</div>{% endif %}
+    <form method="post">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" name="username" autofocus required>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" name="password" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%">Sign in</button>
+    </form>
+  </div>
+</div>
 ''')
 
 T_DASH = page('''
 <h2>Service Status</h2>
 <div class="grid">
 {% for svc, label, status in statuses %}
-  <article>
-    <header><strong>{{ label }}</strong></header>
-    <p class="{{ status }}">{{ status }}</p>
-    <footer>
-      <form method="post" action="/service/{{ svc }}/restart" style="margin:0">
-        <button type="submit" class="secondary sm">Restart</button>
-      </form>
-    </footer>
-  </article>
+  <div class="svc-tile">
+    <div class="svc-name">{{ label }}</div>
+    <div><span class="badge badge-{{ status }}">{{ status }}</span></div>
+    <form method="post" action="/service/{{ svc }}/restart" style="margin:0">
+      <button type="submit" class="btn btn-secondary btn-sm">Restart</button>
+    </form>
+  </div>
 {% endfor %}
 </div>
 ''')
 
 T_USERS = page('''
 <h2>Users</h2>
-<article>
-  <header><strong>Create User</strong></header>
-  <form method="post" action="/users/create">
-    <div class="grid">
-      <input type="text" name="username" placeholder="username"
-             pattern="[a-zA-Z0-9_-]+" maxlength="32" required>
-      <button type="submit">Create</button>
-    </div>
-  </form>
-  <small>Generates a TAK certificate, registers it on the server, and adds a WireGuard peer.</small>
-</article>
+<div class="card" style="margin-bottom:1.5rem">
+  <div class="card-header">Create User</div>
+  <div class="card-body">
+    <form method="post" action="/users/create">
+      <div class="input-row">
+        <input type="text" name="username" placeholder="username"
+               pattern="[a-zA-Z0-9_-]+" maxlength="32" required>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+    <small style="margin-top:.5rem;display:block">Generates a TAK certificate, registers it on the server, and adds a WireGuard peer.</small>
+  </div>
+</div>
 {% if users %}
-<article>
-  <header><strong>Existing Users</strong> &nbsp;
-    <small>Certificate password: <code>{{ cert_pass }}</code></small>
-  </header>
-  <figure><table>
+<div class="card">
+  <div class="card-header">Existing Users &nbsp;<small>cert password: <code>{{ cert_pass }}</code></small></div>
+  <table>
     <thead><tr>
       <th>Name</th>
       <th>TAK Certificate</th>
@@ -1387,13 +1492,12 @@ T_USERS = page('''
       <tr>
         <td>{{ u }}</td>
         <td><a href="/download/file/{{ u }}.p12" download>{{ u }}.p12</a></td>
-        <td><a href="/download/bundle/atak/{{ u }}" download>
-          cert + WireGuard config</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>cert + WireGuard</a></td>
       </tr>
     {% endfor %}
     </tbody>
-  </table></figure>
-</article>
+  </table>
+</div>
 {% else %}
 <p>No certificates found in cert directory.</p>
 {% endif %}
@@ -1401,28 +1505,30 @@ T_USERS = page('''
 
 T_DL = page('''
 <h2>Downloads</h2>
-<div class="grid">
-  <article>
-    <header><strong>Browser Access</strong></header>
-    <p>Root CA + Admin certificate for Firefox/Chrome access to the TAK web admin
-       at <code>https://{{ request.host.split(":")[0] }}:8443</code>.</p>
-    <a href="/download/bundle/browser" role="button" download>
-      Download browser-bundle.zip</a>
-  </article>
-  <article>
-    <header><strong>Individual Certificates</strong></header>
-    <p>Password for all certs: <code>{{ cert_pass }}</code></p>
-    {% for fn in p12s %}
-      <a href="/download/file/{{ fn }}" download>{{ fn }}</a><br>
-    {% endfor %}
-  </article>
+<div class="grid" style="margin-bottom:1.5rem">
+  <div class="card">
+    <div class="card-header">Browser Access</div>
+    <div class="card-body">
+      <p>Root CA + Admin cert for Firefox/Chrome access to the TAK web admin at
+         <code>https://{{ request.host.split(":")[0] }}:8443</code>.</p>
+      <a href="/download/bundle/browser" class="btn btn-primary btn-sm" download>
+        Download browser-bundle.zip</a>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">Individual Certificates</div>
+    <div class="card-body">
+      <p>Password for all certs: <code>{{ cert_pass }}</code></p>
+      {% for fn in p12s %}
+        <a href="/download/file/{{ fn }}" download>{{ fn }}</a><br>
+      {% endfor %}
+    </div>
+  </div>
 </div>
 {% if wg_users %}
-<article>
-  <header><strong>Device Bundles</strong>
-    <small> — cert + WireGuard config + QR code per device</small>
-  </header>
-  <figure><table>
+<div class="card">
+  <div class="card-header">Device Bundles <small>— cert + WireGuard config + QR code per device</small></div>
+  <table>
     <thead><tr>
       <th>User</th><th>WireGuard config</th><th>QR code</th><th>Full bundle</th>
     </tr></thead>
@@ -1436,8 +1542,8 @@ T_DL = page('''
       </tr>
     {% endfor %}
     </tbody>
-  </table></figure>
-</article>
+  </table>
+</div>
 {% endif %}
 ''')
 
