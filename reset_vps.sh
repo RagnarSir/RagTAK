@@ -33,8 +33,18 @@ success "Services stopped."
 
 # ─── 2. TAK Server ───────────────────────────────────────────────────────────
 info "Removing TAK Server..."
-if dpkg -l | grep -q takserver; then
-    dpkg --purge takserver 2>/dev/null || apt-get purge -y takserver 2>/dev/null || true
+# Kill all tak-user processes — dpkg post-removal calls userdel which fails if
+# the tak Java processes are still alive after systemctl stop
+if id tak &>/dev/null; then
+    pkill -u tak 2>/dev/null || true
+    sleep 3
+    pkill -9 -u tak 2>/dev/null || true
+    sleep 1
+fi
+# Force dpkg out of its broken state before attempting purge
+dpkg --remove --force-remove-reinstreq takserver 2>/dev/null || true
+if dpkg -l | grep -q takserver 2>/dev/null; then
+    apt-get purge -y takserver 2>/dev/null || true
 fi
 rm -rf /opt/tak
 userdel -r tak 2>/dev/null || true
