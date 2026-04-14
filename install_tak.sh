@@ -889,9 +889,12 @@ systemctl is-active --quiet node-red && \
 info "Installing WireGuard..."
 apt-get install -y wireguard wireguard-tools qrencode
 
-# Enable IP forwarding
-sed -i 's/#*net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
-sed -i 's/#*net.ipv6.conf.all.forwarding=.*/net.ipv6.conf.all.forwarding=1/' /etc/sysctl.conf
+# Enable IP forwarding — write to sysctl.d so it persists on all distros
+# (Debian does not have these lines in sysctl.conf, so sed would be a no-op there)
+cat > /etc/sysctl.d/99-ragtak-forward.conf << 'EOF'
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+EOF
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
 
@@ -1455,7 +1458,12 @@ systemctl is-active --quiet takadmin && \
 
 # ─── 15. Firewall ─────────────────────────────────────────────────────────────
 info "Configuring firewall..."
-ufw allow ssh 2>/dev/null || true
+# Always allow the actual SSH port — read from sshd_config to handle non-standard ports
+SSH_PORT="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null \
+    | awk '{print $2}' | head -1)"
+SSH_PORT="${SSH_PORT:-22}"
+ufw allow "${SSH_PORT}/tcp" comment "SSH"
+[[ "$SSH_PORT" != "22" ]] && ufw allow ssh 2>/dev/null || true   # also allow 22 if non-standard
 ufw allow "${WG_PORT}/udp"        comment "WireGuard VPN"
 ufw allow "${NODERED_PORT}/tcp"   comment "Node-RED"
 ufw allow "${MUMBLE_PORT}/tcp"    comment "Mumble voice"
