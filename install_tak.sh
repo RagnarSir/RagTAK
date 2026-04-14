@@ -279,14 +279,14 @@ CLIENT_NAMES=("client1" "client2" "client3" "client4" "client5")
 CERT_PASS="${CERT_PASS:-atakatak}"
 
 # Certificate metadata
-export STATE="${STATE:-CPH}"
-export CITY="${CITY:-Roskilde}"
-export ORGANIZATION="${ORGANIZATION:-SSR}"
-export ORGANIZATIONAL_UNIT="${ORGANIZATIONAL_UNIT:-S6}"
+export STATE="${STATE:-NA}"
+export CITY="${CITY:-NA}"
+export ORGANIZATION="${ORGANIZATION:-TAKStack}"
+export ORGANIZATIONAL_UNIT="${ORGANIZATIONAL_UNIT:-TAK}"
 
 # Database credentials (must match CoreConfig.xml)
 DB_USER="martiuser"
-DB_PASS="martipass"
+DB_PASS="${DB_PASS:-$(openssl rand -hex 16)}"
 DB_NAME="cot"
 
 # Let's Encrypt (optional — set DOMAIN to enable)
@@ -335,6 +335,11 @@ echo ""
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0"
 command -v apt-get &>/dev/null || die "Requires a Debian/Ubuntu-based system."
 
+# Resolve public IP once — reused for WireGuard endpoint and summary
+PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+    || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+    || hostname -I | awk '{print $1}')"
+
 ARCH="$(uname -m)"
 case "$ARCH" in
     x86_64)  MEDIAMTX_ARCH="amd64" ;;
@@ -373,6 +378,9 @@ fi
 # ─── 3. Add PostgreSQL 15 repo (before first apt-get update) ─────────────────
 # TAK 5.7 requires PG15. Ubuntu 24.04 ships PG16.
 # Linux Mint uses its own codename — read Ubuntu base from /etc/os-release.
+# Ensure lsb-release is available on minimal Debian installs before we need it.
+apt-get install -y --no-install-recommends lsb-release gnupg curl 2>/dev/null || true
+
 UBUNTU_CODENAME="$(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release 2>/dev/null \
     || grep -oP '(?<=DISTRIB_CODENAME=).*' /etc/upstream-release/lsb-release 2>/dev/null \
     || lsb_release -cs)"
@@ -536,8 +544,24 @@ cp "${CERT_DIR}/truststore-root.jks" "${CERT_DIR}/fed-truststore.jks" 2>/dev/nul
 
 [[ -f "${CERT_DIR}/truststore-root.jks" ]] && \
     cp "${CERT_DIR}/truststore-root.jks" "${SCRIPT_DIR}/truststore-root.jks" && \
-    cp "${CERT_DIR}/truststore-root.jks" "${SCRIPT_DIR}/truststore-root.p12" && \
-    success "Truststore copied to: ${SCRIPT_DIR}/truststore-root.jks / .p12"
+    success "Truststore (JKS) copied to: ${SCRIPT_DIR}/truststore-root.jks"
+
+# Use the real PKCS12 truststore for ATAK/WinTAK — do NOT rename the JKS file
+if [[ -f "${CERT_DIR}/truststore-root.p12" ]]; then
+    cp "${CERT_DIR}/truststore-root.p12" "${SCRIPT_DIR}/truststore-root.p12"
+    success "Truststore (PKCS12) copied to: ${SCRIPT_DIR}/truststore-root.p12"
+elif [[ -f "${CERT_DIR}/truststore-root.jks" ]]; then
+    # Convert JKS → PKCS12 so ATAK gets a valid .p12 file
+    keytool -importkeystore \
+        -srckeystore  "${CERT_DIR}/truststore-root.jks" \
+        -destkeystore "${SCRIPT_DIR}/truststore-root.p12" \
+        -deststoretype PKCS12 \
+        -srcstorepass  "$CERT_PASS" \
+        -deststorepass "$CERT_PASS" \
+        -noprompt 2>/dev/null && \
+        success "Truststore converted JKS→PKCS12: ${SCRIPT_DIR}/truststore-root.p12" || \
+        warn "Truststore PKCS12 conversion failed — copy truststore-root.jks to ATAK manually"
+fi
 
 for client_p12 in "${CERT_DIR}"/client*.p12 "${CERT_DIR}"/client*.jks; do
     [[ -f "$client_p12" ]] || continue
@@ -715,8 +739,9 @@ autobanTime=300
 logfile=/var/log/mumble-server/mumble-server.log
 EOF
 
-# Set the superuser password
-(echo "$MUMBLE_SUPERUSER_PASS" | mumble-server -ini /etc/mumble-server.ini -supw 2>/dev/null) || true
+# Set the superuser password (-supw expects the password as a positional argument)
+mumble-server -supw "$MUMBLE_SUPERUSER_PASS" -ini /etc/mumble-server.ini 2>/dev/null || \
+    warn "Mumble SuperUser password may not have been set — set it manually with: mumble-server -supw <password>"
 
 systemctl enable --now mumble-server
 sleep 2
@@ -734,12 +759,22 @@ apt-get install -y nodejs
 # Install Node-RED globally
 npm install -g --unsafe-perm node-red 2>/dev/null
 
+# Resolve the node-red binary path (varies: /usr/bin or /usr/local/bin depending on npm prefix)
+NODERED_BIN="$(command -v node-red 2>/dev/null || npm bin -g 2>/dev/null)/node-red"
+[[ -x "$NODERED_BIN" ]] || NODERED_BIN="$(find /usr/local/bin /usr/bin -name node-red 2>/dev/null | head -1)"
+[[ -x "$NODERED_BIN" ]] || die "node-red binary not found after install — check: npm install -g node-red"
+info "node-red binary: $NODERED_BIN"
+
 # Create dedicated user and home directory
 id nodered &>/dev/null || useradd -r -m -d /home/nodered -s /usr/sbin/nologin nodered
 
 # Generate password hash for the admin UI
 [[ -z "$NODERED_PASS" ]] && NODERED_PASS="$(openssl rand -base64 16)"
-NODERED_HASH="$(node-red admin hash-pw "$NODERED_PASS" 2>/dev/null)"
+NODERED_HASH="$("$NODERED_BIN" admin hash-pw "$NODERED_PASS" 2>/dev/null)"
+if [[ -z "$NODERED_HASH" ]]; then
+    warn "node-red hash-pw failed — Node-RED admin UI will have no password set"
+    NODERED_HASH='$2b$08$placeholder_set_password_manually'
+fi
 
 # Write settings file
 mkdir -p /home/nodered/.node-red
@@ -769,7 +804,7 @@ EOF
 chown -R nodered:nodered /home/nodered
 
 # Create systemd service
-cat > /etc/systemd/system/node-red.service << 'UNIT'
+cat > /etc/systemd/system/node-red.service << EOF
 [Unit]
 Description=Node-RED
 After=network.target
@@ -778,7 +813,7 @@ After=network.target
 Type=simple
 User=nodered
 WorkingDirectory=/home/nodered
-ExecStart=/usr/bin/node-red --settings /home/nodered/.node-red/settings.js
+ExecStart=${NODERED_BIN} --settings /home/nodered/.node-red/settings.js
 Restart=on-failure
 RestartSec=10
 KillSignal=SIGINT
@@ -786,7 +821,7 @@ SyslogIdentifier=node-red
 
 [Install]
 WantedBy=multi-user.target
-UNIT
+EOF
 
 systemctl daemon-reload
 systemctl enable --now node-red
@@ -804,8 +839,13 @@ sed -i 's/#*net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 sed -i 's/#*net.ipv6.conf.all.forwarding=.*/net.ipv6.conf.all.forwarding=1/' /etc/sysctl.conf
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
 
-# Detect WAN interface
-WAN_IF="$(ip route | awk '/default/ {print $5; exit}')"
+# Detect WAN interface — try default route first, fall back to first non-loopback interface
+WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)"
+if [[ -z "$WAN_IF" ]]; then
+    WAN_IF="$(ip -o link show | awk -F': ' '!/lo/{print $2; exit}')"
+fi
+[[ -n "$WAN_IF" ]] || die "Could not detect WAN interface. Set WAN_IF manually and re-run."
+info "WAN interface: $WAN_IF"
 
 # Generate server keys
 wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
@@ -814,7 +854,7 @@ WG_SERVER_PRIV="$(cat /etc/wireguard/server.key)"
 WG_SERVER_PUB="$(cat /etc/wireguard/server.pub)"
 
 # Resolve endpoint (domain if LE, otherwise public IP)
-WG_PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+WG_PUBLIC_IP="$PUBLIC_IP"
 WG_ENDPOINT="${DOMAIN:-$WG_PUBLIC_IP}"
 
 # Build server config and client configs
@@ -913,7 +953,6 @@ fi
 
 # ─── 17. Summary ──────────────────────────────────────────────────────────────
 HOST_IP="$(hostname -I | awk '{print $1}')"
-PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || echo "$HOST_IP")"
 DISPLAY_HOST="${DOMAIN:-$PUBLIC_IP}"
 
 echo ""
