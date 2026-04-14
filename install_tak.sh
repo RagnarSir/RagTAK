@@ -684,7 +684,9 @@ if [[ -n "$DOMAIN" ]]; then
     ufw allow 80/tcp comment "Certbot ACME challenge" 2>/dev/null || true
 
     # Build certbot options
-    CERTBOT_OPTS=(certonly --standalone --non-interactive --agree-tos -d "$DOMAIN")
+    # --cert-name is required when changing key type on re-run (certbot safeguard)
+    CERTBOT_OPTS=(certonly --standalone --non-interactive --agree-tos
+                  --key-type rsa --cert-name "$DOMAIN" -d "$DOMAIN")
     if [[ -n "$LE_EMAIL" ]]; then
         CERTBOT_OPTS+=(--email "$LE_EMAIL")
     else
