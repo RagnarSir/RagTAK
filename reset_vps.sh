@@ -16,8 +16,8 @@ fi
 echo -e "${RED}"
 echo "======================================================"
 echo "  This will WIPE all RagTAK components from this VPS."
-echo "  TAK Server, PostgreSQL, certs, WireGuard, Node-RED,"
-echo "  Mumble, MediaMTX, and the RagTAK admin panel."
+echo "  TAK Server, PostgreSQL, certs, Node-RED, Mumble,"
+echo "  MediaMTX, OpenVPN, and the RagTAK admin panel."
 echo "======================================================"
 echo -en "${NC}"
 read -rp "Type YES to continue: " confirm
@@ -103,8 +103,8 @@ apt-get purge -y dnsmasq dnsmasq-base 2>/dev/null || true
 rm -f /etc/dnsmasq.d/ragtak.conf
 success "dnsmasq removed."
 
-# ─── 8. WireGuard ────────────────────────────────────────────────────────────
-info "Removing WireGuard..."
+# ─── 8. WireGuard (legacy — removed from installer, kept for old installs) ───
+info "Removing WireGuard (if present)..."
 ip link delete wg0 2>/dev/null || true
 rm -rf /etc/wireguard
 apt-get purge -y wireguard wireguard-tools qrencode 2>/dev/null || true
@@ -141,7 +141,7 @@ success "UFW reset (SSH port ${SSH_PORT} re-allowed)."
 # ─── 12. Clean up generated certs dir in script location ─────────────────────
 info "Removing generated certs directories..."
 # Common locations where install_tak.sh might have been run from
-for dir in /home/ubuntu /root /tmp; do
+for dir in /home/ubuntu /home/ubuntu/TAK/RagTAK /root /tmp; do
     if [[ -d "${dir}/certs" ]]; then
         read -rp "  Remove ${dir}/certs? [y/N] " yn
         [[ "$yn" =~ ^[Yy]$ ]] && rm -rf "${dir}/certs" && success "  Removed ${dir}/certs."
