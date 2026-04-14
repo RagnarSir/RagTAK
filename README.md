@@ -43,7 +43,7 @@ It does **not** work on:
 
 ### 3. If you are using a VPS (cloud server)
 
-Your VPS provider has its own firewall separate from the one on your server. You need to open these ports in your provider's control panel **before** running the script:
+The script automatically configures the firewall on your server (UFW). However, VPS providers also run their own firewall at the network level — outside the server — and the script cannot touch that. You need to open these ports in your **provider's control panel** manually, before running the script:
 
 | Port | Protocol | What it's for |
 |------|----------|---------------|
