@@ -15,6 +15,7 @@ Running one command installs and configures everything:
 - **MediaMTX** — video streaming (RTSP/HLS/WebRTC) for drone feeds and cameras
 - **Certificates** — automatically generated so all connections are encrypted
 - **Firewall** — configured automatically
+- **OpenVPN** *(optional)* — the script asks at startup whether to install it. If you say yes, all services are locked behind the VPN — only SSH and the OpenVPN port are reachable from the internet. Clients connect via the OpenVPN Connect app before accessing TAK, Mumble, or the admin panel
 
 ---
 
