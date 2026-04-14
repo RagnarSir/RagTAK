@@ -1074,7 +1074,12 @@ def create_user():
         return redirect(url_for('users'))
 
     # 1. Generate TAK certificate
-    env = {**os.environ, 'TAKPASS': CERT_PASS, 'CAPASS': CERT_PASS, 'PASS': CERT_PASS}
+    env = {**os.environ,
+           'TAKPASS': CERT_PASS, 'CAPASS': CERT_PASS, 'PASS': CERT_PASS,
+           'STATE':               os.environ.get('STATE', 'NA'),
+           'CITY':                os.environ.get('CITY', 'NA'),
+           'ORGANIZATION':        os.environ.get('ORGANIZATION', 'RagTAK'),
+           'ORGANIZATIONAL_UNIT': os.environ.get('ORGANIZATIONAL_UNIT', 'TAK')}
     r = run('bash', 'makeCert.sh', 'client', name, cwd=CERTS_SCRIPT, env=env)
     if not cert_p12.exists():
         flash(f'Certificate generation failed: {r.stderr[:300]}', 'error')
@@ -1605,6 +1610,10 @@ Environment=BIND_HOST=0.0.0.0
 Environment=SECRET_KEY=${TAKADMIN_SECRET}
 Environment=OPENVPN_INSTALLED=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo 1 || echo "")
 Environment=VPN_IP=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo "${OPENVPN_SUBNET}.1" || echo "")
+Environment=STATE=${STATE:-NA}
+Environment=CITY=${CITY:-NA}
+Environment=ORGANIZATION=${ORGANIZATION:-RagTAK}
+Environment=ORGANIZATIONAL_UNIT=${ORGANIZATIONAL_UNIT:-TAK}
 
 [Install]
 WantedBy=multi-user.target
