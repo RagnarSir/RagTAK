@@ -566,20 +566,29 @@ export TAKPASS="$CERT_PASS"
 export CAPASS="$CERT_PASS"
 export PASS="$CERT_PASS"
 
+# Wipe existing keystores/certs so keytool never hits an "alias already exists"
+# interactive prompt, which would hang the script on re-runs.
+CERT_FILES_DIR="${CERTS_SCRIPT_DIR}/files"
+if [[ -d "$CERT_FILES_DIR" ]]; then
+    info "  Clearing existing cert files to prevent keytool prompts on re-run..."
+    rm -f "${CERT_FILES_DIR}"/*.p12 "${CERT_FILES_DIR}"/*.jks \
+          "${CERT_FILES_DIR}"/*.pem "${CERT_FILES_DIR}"/*.csr 2>/dev/null || true
+fi
+
 pushd "$CERTS_SCRIPT_DIR" > /dev/null
 
 info "  Generating Root CA: $CA_NAME"
-bash makeRootCa.sh --ca-name "$CA_NAME" 2>&1 | grep -E "Certificate|error|Error" | head -5 || true
+bash makeRootCa.sh --ca-name "$CA_NAME" </dev/null 2>&1 | grep -E "Certificate|error|Error" | head -5 || true
 
 info "  Generating server cert: $SERVER_NAME"
-bash makeCert.sh server "$SERVER_NAME" 2>&1 | grep -E "ok|error|Error" | head -3 || true
+bash makeCert.sh server "$SERVER_NAME" </dev/null 2>&1 | grep -E "ok|error|Error" | head -3 || true
 
 info "  Generating admin cert: $ADMIN_USER"
-bash makeCert.sh client "$ADMIN_USER" 2>&1 | grep -E "ok|error|Error" | head -3 || true
+bash makeCert.sh client "$ADMIN_USER" </dev/null 2>&1 | grep -E "ok|error|Error" | head -3 || true
 
 for name in "${CLIENT_NAMES[@]}"; do
     info "  Generating client cert: $name"
-    bash makeCert.sh client "$name" 2>&1 | grep -E "ok|error|Error" | head -2 || true
+    bash makeCert.sh client "$name" </dev/null 2>&1 | grep -E "ok|error|Error" | head -2 || true
 done
 
 popd > /dev/null
