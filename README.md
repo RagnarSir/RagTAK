@@ -33,11 +33,13 @@ TAK Server is free but requires registration — it is export-controlled softwar
 ### 2. Check your system
 
 This script works on:
-- Ubuntu 22.04 or 24.04
+- Ubuntu 22.04 or 24.04 LTS
 - Debian 11 or 12
 - Linux Mint 21+
 
-It does **not** work on Windows or macOS (run it on a Linux server or VM).
+It does **not** work on:
+- Windows or macOS (run it on a Linux server or VM)
+- Non-LTS Ubuntu releases (e.g. 23.10, 24.10, 25.04) — TAK Server is only validated against LTS releases and the `.deb` package may fail to install on non-LTS due to library version differences
 
 ### 3. If you are using a VPS (cloud server)
 
