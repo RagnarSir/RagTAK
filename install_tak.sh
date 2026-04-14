@@ -615,7 +615,7 @@ for client_p12 in "${CERT_DIR}"/client*.p12 "${CERT_DIR}"/client*.jks; do
 done
 
 # Auto-import certs into Firefox for the invoking user
-REAL_USER="${SUDO_USER:-$USER}"
+REAL_USER="${SUDO_USER:-${USER:-root}}"
 REAL_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6 || true)"
 FF_PROFILE="$(find "${REAL_HOME}/.mozilla/firefox" "${REAL_HOME}/.config/mozilla/firefox" \
     -maxdepth 2 -name "cert9.db" 2>/dev/null | head -1 | xargs -r dirname 2>/dev/null || true)"
@@ -1566,7 +1566,7 @@ T_DL = page('''
 
 
 if __name__ == '__main__':
-    bind_host = os.environ.get('BIND_HOST', '10.13.13.1')
+    bind_host = os.environ.get('BIND_HOST', '0.0.0.0')
     port      = int(os.environ.get('TAKADMIN_PORT', '8080'))
     app.run(host=bind_host, port=port, debug=False)
 PYEOF
@@ -1628,6 +1628,7 @@ if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
     openvpn --genkey secret /etc/openvpn/ta.key 2>/dev/null \
         || openvpn --genkey --secret /etc/openvpn/ta.key \
         || die "Failed to generate OpenVPN TLS auth key"
+    [[ -s /etc/openvpn/ta.key ]] || die "OpenVPN TLS auth key is empty — genkey failed silently"
 
     # Server config — ECDH avoids slow DH parameter generation
     mkdir -p /var/log/openvpn
@@ -1706,15 +1707,18 @@ net.ipv4.ip_forward = 1
 EOF
 
     # NAT masquerade so traffic from the VPN subnet routes correctly
+    # Exclude loopback, tunnel (tun/tap), and VPN interfaces from WAN detection
     WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1 || true)"
-    [[ -z "$WAN_IF" ]] && WAN_IF="$(ip -o link show | awk -F': ' '!/lo/{print $2; exit}')"
+    [[ -z "$WAN_IF" ]] && \
+        WAN_IF="$(ip -o link show | awk -F': ' '!/^[0-9]+: *(lo|tun|tap|wg|docker|veth|virbr)/{print $2; exit}')"
     [[ -n "$WAN_IF" ]] || die "Could not detect WAN interface for OpenVPN NAT"
     info "OpenVPN NAT via interface: $WAN_IF"
+    # Install iptables-persistent FIRST so /etc/iptables/ is managed correctly
+    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent 2>/dev/null || true
     iptables -t nat -A POSTROUTING -s "${OPENVPN_SUBNET}.0/24" -o "$WAN_IF" -j MASQUERADE || true
-    # Persist iptables rules across reboots
+    # Save rules now that iptables-persistent owns the directory
     mkdir -p /etc/iptables
     iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent 2>/dev/null || true
 
     systemctl enable --now openvpn@server
     sleep 2
@@ -1725,6 +1729,9 @@ fi
 
 # ─── 15. Firewall ─────────────────────────────────────────────────────────────
 info "Configuring firewall..."
+# Explicit default policy — must be set before adding rules so VPN-only mode works
+ufw default deny incoming
+ufw default allow outgoing
 # Always allow the actual SSH port — read from sshd_config to handle non-standard ports
 SSH_PORT="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null \
     | awk '{print $2}' | head -1 || true)"
@@ -1773,8 +1780,16 @@ success "Firewall rules applied."
 info "Starting TAK Server..."
 systemctl enable takserver
 systemctl restart takserver
-info "Waiting 45 seconds for TAK to fully initialise..."
-sleep 45
+info "Waiting for TAK Server to start listening on port 8089 (up to 90 seconds)..."
+_TAK_UP=0
+for _i in {1..90}; do
+    if ss -tln 2>/dev/null | grep -q ':8089 '; then
+        _TAK_UP=1; break
+    fi
+    sleep 1
+done
+[[ $_TAK_UP -eq 1 ]] && success "TAK Server is listening on port 8089." || \
+    warn "TAK Server did not start within 90 seconds — admin cert registration may fail."
 
 # ─── 17. Register admin certificate ──────────────────────────────────────────
 ADMIN_PEM="${CERT_DIR}/${ADMIN_USER}.pem"
