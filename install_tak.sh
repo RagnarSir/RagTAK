@@ -370,6 +370,7 @@ fi
 PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
     || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
     || hostname -I | awk '{print $1}')"
+[[ -n "$PUBLIC_IP" ]] || die "Could not determine public IP. Set it manually: PUBLIC_IP=x.x.x.x sudo bash $0"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -474,6 +475,8 @@ export PGPORT=5432
 info "Installing TAK Server..."
 dpkg -i "$TAK_DEB_PATH" || apt-get install -f -y
 [[ -d "$TAK_DIR" ]] || die "TAK Server installation failed — $TAK_DIR not found."
+[[ -f "${TAK_DIR}/CoreConfig.xml" ]] || die "TAK Server install incomplete — CoreConfig.xml missing."
+id tak &>/dev/null || die "TAK Server install incomplete — 'tak' user not created by .deb."
 success "TAK Server installed to $TAK_DIR"
 
 # ─── 7. Set up TAK database manually ─────────────────────────────────────────
@@ -519,8 +522,10 @@ fi
 
 # Run TAK's schema manager to create all tables
 info "  Running SchemaManager..."
-sudo -u tak java -jar "${TAK_DIR}/db-utils/SchemaManager.jar" upgrade 2>&1 \
-    | grep -E "INFO|ERROR|WARN" | tail -10 || true
+sudo -u tak java -jar "${TAK_DIR}/db-utils/SchemaManager.jar" upgrade \
+    > /tmp/tak_schema.log 2>&1 || \
+    warn "SchemaManager may have failed — check /tmp/tak_schema.log if TAK Server fails to start"
+grep -E "INFO|ERROR|WARN" /tmp/tak_schema.log | tail -10 || true
 
 success "TAK database configured."
 
@@ -529,7 +534,11 @@ CORECONFIG="${TAK_DIR}/CoreConfig.xml"
 if [[ -f "$CORECONFIG" ]]; then
     info "Patching CoreConfig.xml with DB credentials..."
     sed -i "s|username=\"martiuser\" password=\"[^\"]*\"|username=\"${DB_USER}\" password=\"${DB_PASS}\"|g" "$CORECONFIG"
-    success "CoreConfig.xml updated (DB password: ${DB_PASS})"
+    if grep -q "password=\"${DB_PASS}\"" "$CORECONFIG"; then
+        success "CoreConfig.xml updated (DB password: ${DB_PASS})"
+    else
+        warn "CoreConfig.xml patch may not have applied — verify DB credentials manually in ${CORECONFIG}"
+    fi
 fi
 
 # ─── 8. Generate PKI certificates ────────────────────────────────────────────
@@ -640,6 +649,12 @@ success "All certificates generated in: $CERT_DIR"
 # ─── 9. Let's Encrypt (optional) ─────────────────────────────────────────────
 if [[ -n "$DOMAIN" ]]; then
     info "Setting up Let's Encrypt certificate for: $DOMAIN"
+
+    # Verify domain resolves before attempting certbot — fail early with a clear message
+    if ! getent hosts "$DOMAIN" &>/dev/null; then
+        die "Domain '$DOMAIN' does not resolve. Point your DNS A record to ${PUBLIC_IP} and wait for propagation, then re-run."
+    fi
+
     apt-get install -y certbot
 
     # Open port 80 temporarily for the ACME HTTP challenge
@@ -660,6 +675,7 @@ if [[ -n "$DOMAIN" ]]; then
 
     # Create deploy hook — runs on initial deploy and every renewal
     LE_DEPLOY="/etc/letsencrypt/renewal-hooks/deploy/takserver.sh"
+    mkdir -p "$(dirname "$LE_DEPLOY")"
     cat > "$LE_DEPLOY" << EOF
 #!/bin/bash
 # Converts renewed Let's Encrypt cert to PKCS12 and redeploys to TAK Server
@@ -1410,7 +1426,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${TAKADMIN_DIR}
-ExecStart=/usr/bin/python3 ${TAKADMIN_DIR}/takadmin.py
+ExecStart=/usr/bin/env python3 ${TAKADMIN_DIR}/takadmin.py
 Restart=on-failure
 RestartSec=5
 Environment=TAKADMIN_USER=Admin
