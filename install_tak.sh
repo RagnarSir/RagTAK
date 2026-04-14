@@ -533,40 +533,43 @@ popd > /dev/null
 # CoreConfig.xml needs fed-truststore.jks
 cp "${CERT_DIR}/truststore-root.jks" "${CERT_DIR}/fed-truststore.jks" 2>/dev/null || true
 
-# Copy admin cert and Root CA to install directory for easy access
+# Copy all certificates to $SCRIPT_DIR/certs/ for easy access
+CERT_OUT_DIR="${SCRIPT_DIR}/certs"
+mkdir -p "$CERT_OUT_DIR"
+
 [[ -f "${CERT_DIR}/${ADMIN_USER}.p12" ]] && \
-    cp "${CERT_DIR}/${ADMIN_USER}.p12" "${SCRIPT_DIR}/${ADMIN_USER}.p12" && \
-    success "Admin cert copied to: ${SCRIPT_DIR}/${ADMIN_USER}.p12"
+    cp "${CERT_DIR}/${ADMIN_USER}.p12" "${CERT_OUT_DIR}/${ADMIN_USER}.p12" && \
+    success "Admin cert copied to: ${CERT_OUT_DIR}/${ADMIN_USER}.p12"
 
 [[ -f "${CERT_DIR}/root-ca.pem" ]] && \
-    cp "${CERT_DIR}/root-ca.pem" "${SCRIPT_DIR}/root-ca.pem" && \
-    success "Root CA copied to: ${SCRIPT_DIR}/root-ca.pem"
+    cp "${CERT_DIR}/root-ca.pem" "${CERT_OUT_DIR}/root-ca.pem" && \
+    success "Root CA copied to: ${CERT_OUT_DIR}/root-ca.pem"
 
 [[ -f "${CERT_DIR}/truststore-root.jks" ]] && \
-    cp "${CERT_DIR}/truststore-root.jks" "${SCRIPT_DIR}/truststore-root.jks" && \
-    success "Truststore (JKS) copied to: ${SCRIPT_DIR}/truststore-root.jks"
+    cp "${CERT_DIR}/truststore-root.jks" "${CERT_OUT_DIR}/truststore-root.jks" && \
+    success "Truststore (JKS) copied to: ${CERT_OUT_DIR}/truststore-root.jks"
 
 # Use the real PKCS12 truststore for ATAK/WinTAK — do NOT rename the JKS file
 if [[ -f "${CERT_DIR}/truststore-root.p12" ]]; then
-    cp "${CERT_DIR}/truststore-root.p12" "${SCRIPT_DIR}/truststore-root.p12"
-    success "Truststore (PKCS12) copied to: ${SCRIPT_DIR}/truststore-root.p12"
+    cp "${CERT_DIR}/truststore-root.p12" "${CERT_OUT_DIR}/truststore-root.p12"
+    success "Truststore (PKCS12) copied to: ${CERT_OUT_DIR}/truststore-root.p12"
 elif [[ -f "${CERT_DIR}/truststore-root.jks" ]]; then
     # Convert JKS → PKCS12 so ATAK gets a valid .p12 file
     keytool -importkeystore \
         -srckeystore  "${CERT_DIR}/truststore-root.jks" \
-        -destkeystore "${SCRIPT_DIR}/truststore-root.p12" \
+        -destkeystore "${CERT_OUT_DIR}/truststore-root.p12" \
         -deststoretype PKCS12 \
         -srcstorepass  "$CERT_PASS" \
         -deststorepass "$CERT_PASS" \
         -noprompt 2>/dev/null && \
-        success "Truststore converted JKS→PKCS12: ${SCRIPT_DIR}/truststore-root.p12" || \
+        success "Truststore converted JKS→PKCS12: ${CERT_OUT_DIR}/truststore-root.p12" || \
         warn "Truststore PKCS12 conversion failed — copy truststore-root.jks to ATAK manually"
 fi
 
 for client_p12 in "${CERT_DIR}"/client*.p12 "${CERT_DIR}"/client*.jks; do
     [[ -f "$client_p12" ]] || continue
-    cp "$client_p12" "${SCRIPT_DIR}/" && \
-        success "Client cert copied to: ${SCRIPT_DIR}/$(basename "$client_p12")"
+    cp "$client_p12" "${CERT_OUT_DIR}/" && \
+        success "Client cert copied to: ${CERT_OUT_DIR}/$(basename "$client_p12")"
 done
 
 # Auto-import certs into Firefox for the invoking user
@@ -578,21 +581,21 @@ FF_PROFILE="$(find "${REAL_HOME}/.mozilla/firefox" "${REAL_HOME}/.config/mozilla
 if [[ -n "$FF_PROFILE" ]]; then
     info "Importing certificates into Firefox profile: $FF_PROFILE"
     sudo -u "$REAL_USER" pk12util \
-        -i "${SCRIPT_DIR}/${ADMIN_USER}.p12" \
+        -i "${CERT_OUT_DIR}/${ADMIN_USER}.p12" \
         -d "sql:${FF_PROFILE}" \
         -W "$CERT_PASS" 2>/dev/null && \
         success "Admin cert imported into Firefox." || \
-        warn "Firefox admin cert import failed — import manually: ${SCRIPT_DIR}/${ADMIN_USER}.p12"
+        warn "Firefox admin cert import failed — import manually: ${CERT_OUT_DIR}/${ADMIN_USER}.p12"
     sudo -u "$REAL_USER" certutil \
         -A -n "TAK-CA" -t "CT,," \
-        -i "${SCRIPT_DIR}/root-ca.pem" \
+        -i "${CERT_OUT_DIR}/root-ca.pem" \
         -d "sql:${FF_PROFILE}" 2>/dev/null && \
         success "Root CA imported into Firefox." || \
-        warn "Firefox CA import failed — import manually: ${SCRIPT_DIR}/root-ca.pem"
+        warn "Firefox CA import failed — import manually: ${CERT_OUT_DIR}/root-ca.pem"
 else
     warn "Firefox profile not found — import certs manually:"
-    warn "  CA:    ${SCRIPT_DIR}/root-ca.pem"
-    warn "  Admin: ${SCRIPT_DIR}/${ADMIN_USER}.p12  (pass: ${CERT_PASS})"
+    warn "  CA:    ${CERT_OUT_DIR}/root-ca.pem"
+    warn "  Admin: ${CERT_OUT_DIR}/${ADMIN_USER}.p12  (pass: ${CERT_PASS})"
 fi
 
 # Fix permissions
@@ -985,24 +988,24 @@ echo "    Domain     : ${DOMAIN}" && \
 echo "    Renewal    : automatic (certbot systemd timer)" && \
 echo "    ATAK note  : No trust store import needed — LE cert is trusted automatically"
 echo ""
-echo -e "  ${CYAN}Certificates${NC}  (${CERT_DIR})"
-echo "    Root CA    : ${SCRIPT_DIR}/root-ca.pem          <-- import into Firefox (Authorities)"
+echo -e "  ${CYAN}Certificates${NC}  (${CERT_OUT_DIR})"
+echo "    Root CA    : ${CERT_OUT_DIR}/root-ca.pem          <-- import into Firefox (Authorities)"
 echo "    Server     : ${CERT_DIR}/${SERVER_NAME}.p12  (pass: ${CERT_PASS})"
-echo "    Admin      : ${CERT_DIR}/${ADMIN_USER}.p12   (pass: ${CERT_PASS})"
-echo "               : ${SCRIPT_DIR}/${ADMIN_USER}.p12  <-- import into Firefox (Your Certificates)"
+echo "    Admin      : ${CERT_OUT_DIR}/${ADMIN_USER}.p12  <-- import into Firefox (Your Certificates)"
+echo "               (pass: ${CERT_PASS})"
 echo ""
 echo "    Clients:"
 for name in "${CLIENT_NAMES[@]}"; do
-    echo "      ${CERT_DIR}/${name}.p12  (pass: ${CERT_PASS})"
+    echo "      ${CERT_OUT_DIR}/${name}.p12  (pass: ${CERT_PASS})"
 done
 echo ""
 echo -e "  ${CYAN}Next steps${NC}"
-echo "    1. Import ${SCRIPT_DIR}/${ADMIN_USER}.p12 into Firefox/Chrome"
+echo "    1. Import ${CERT_OUT_DIR}/${ADMIN_USER}.p12 into Firefox/Chrome"
 echo "       (password: ${CERT_PASS})"
 echo "    2. Open: https://${HOST_IP}:${TAK_ADMIN_PORT}"
 echo "    3. On each ATAK/WinTAK device:"
-echo "       a. Trust Store : ${SCRIPT_DIR}/truststore-root.p12  (pass: ${CERT_PASS})"
-echo "       b. Client Cert : ${SCRIPT_DIR}/client1.p12 .. client5.p12  (pass: ${CERT_PASS})"
+echo "       a. Trust Store : ${CERT_OUT_DIR}/truststore-root.p12  (pass: ${CERT_PASS})"
+echo "       b. Client Cert : ${CERT_OUT_DIR}/client1.p12 .. client5.p12  (pass: ${CERT_PASS})"
 echo "       c. Server      : ssl://${HOST_IP}:${TAK_COT_PORT}"
 echo ""
 echo -e "  ${CYAN}Mumble${NC}"
