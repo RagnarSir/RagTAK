@@ -753,12 +753,8 @@ if wget -q --show-progress -O "${MEDIAMTX_TMP}/mediamtx.tar.gz" "$MEDIAMTX_URL";
 logLevel: info
 logDestinations: [stdout]
 rtspAddress: :8554
-rtspTransports: [tcp, udp, udp-multicast]
-rtspEncryption: no
 rtmpAddress: :1935
-rtmpEncryption: no
 hlsAddress: :8888
-hlsEncryption: no
 webrtcAddress: :8889
 api: yes
 apiAddress: 127.0.0.1:9997
