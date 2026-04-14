@@ -932,7 +932,9 @@ PUBLIC_IP    = os.environ.get('PUBLIC_IP', '')
 CERT_PASS    = os.environ.get('CERT_PASS', 'atakatak')
 CERT_OUT_DIR = os.environ.get('CERT_OUT_DIR', '/opt/tak/certs/files')
 DOMAIN       = os.environ.get('DOMAIN', '')
-HOST         = DOMAIN or PUBLIC_IP
+VPN_IP       = os.environ.get('VPN_IP', '')
+# When OpenVPN is installed all services are VPN-only — use VPN IP for links
+HOST         = VPN_IP if os.environ.get('OPENVPN_INSTALLED') and VPN_IP else DOMAIN or PUBLIC_IP
 
 SERVICES = [
     ('takserver',          'TAK Server'),
@@ -1602,6 +1604,7 @@ Environment=TAKADMIN_PORT=${TAKADMIN_PORT}
 Environment=BIND_HOST=0.0.0.0
 Environment=SECRET_KEY=${TAKADMIN_SECRET}
 Environment=OPENVPN_INSTALLED=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo 1 || echo "")
+Environment=VPN_IP=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo "${OPENVPN_SUBNET}.1" || echo "")
 
 [Install]
 WantedBy=multi-user.target
