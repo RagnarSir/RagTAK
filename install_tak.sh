@@ -339,6 +339,34 @@ echo ""
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0"
 command -v apt-get &>/dev/null || die "Requires a Debian/Ubuntu-based system."
 
+# Warn on non-LTS Ubuntu — TAK Server is only validated against LTS releases
+if grep -qi 'ubuntu' /etc/os-release 2>/dev/null; then
+    _lts_ok="$(grep -oP '(?<=LTS)' /etc/os-release 2>/dev/null || true)"
+    if [[ -z "$_lts_ok" ]]; then
+        _ver="$(grep -oP '(?<=VERSION_ID=")[^"]+' /etc/os-release 2>/dev/null || echo 'unknown')"
+        echo ""
+        echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║              UNSUPPORTED UBUNTU VERSION WARNING              ║${NC}"
+        echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+        echo -e "  Detected Ubuntu ${_ver}, which is a ${RED}non-LTS release${NC}."
+        echo ""
+        echo "  TAK Server is only validated against Ubuntu LTS releases"
+        echo "  (22.04, 24.04). On non-LTS versions the .deb package may"
+        echo "  fail to install due to library version differences."
+        echo ""
+        echo "  Recommended: reinstall with Ubuntu 24.04 LTS."
+        echo ""
+        echo -e "${YELLOW}  Proceed anyway at your own risk.${NC}"
+        echo ""
+        read -r -p "  Type YES to continue anyway, or press Enter to abort: " _confirm
+        echo ""
+        [[ "$_confirm" == "YES" ]] || { echo "Aborted."; exit 1; }
+        warn "Continuing on unsupported Ubuntu ${_ver} — good luck."
+        echo ""
+    fi
+fi
+
 # Resolve public IP once — reused for WireGuard endpoint and summary
 PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
     || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
