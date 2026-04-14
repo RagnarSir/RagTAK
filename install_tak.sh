@@ -18,7 +18,7 @@
 #    - MediaMTX RTSP/HLS/WebRTC video streaming server
 #    - Mumble voice communication server
 #    - Node-RED flow automation
-#    - WireGuard VPN (client configs + QR codes generated automatically)
+#    - RagTAK Admin Panel (Flask web UI for service management)
 #    - UFW firewall configuration
 #
 # =============================================================================
@@ -55,7 +55,7 @@
 #      Port 64738 / TCP  — Mumble voice
 #      Port 64738 / UDP  — Mumble voice/UDP
 #      Port 1880  / TCP  — Node-RED web UI
-#      Port 51820 / UDP  — WireGuard VPN
+#      Port 8080  / TCP  — RagTAK Admin Panel
 #
 #    Note: The script configures UFW (Linux firewall) automatically, but on
 #    cloud providers UFW and the provider's firewall are independent — both
@@ -165,34 +165,6 @@
 #    - Bridge TAK to MQTT, webhooks, or databases
 #
 # =============================================================================
-#  STEP 9 — CONNECT WIREGUARD (VPN)
-# =============================================================================
-#
-#  Client config files and QR codes are generated in the install directory:
-#    wg-tak-admin.conf / .png   — admin workstation
-#    wg-client1.conf  / .png    — ATAK device 1
-#    wg-client2.conf  / .png    — ATAK device 2  (and so on)
-#    wg-wintak.conf   / .png    — WinTAK workstation
-#
-#  ANDROID / iOS:
-#    1. Install the WireGuard app from the Play Store / App Store
-#    2. Tap + > Scan QR code > scan the .png for that device
-#    3. Enable the tunnel — the device is now on the VPN
-#    4. Connect ATAK to 10.13.13.1:8089 (VPN address) instead of public IP
-#
-#  WINDOWS / LINUX:
-#    1. Install WireGuard from https://www.wireguard.com/install/
-#    2. Import the .conf file for that device
-#    3. Activate the tunnel
-#    4. Connect WinTAK to 10.13.13.1:8089
-#
-#  NOTE: By default, only traffic to 10.13.13.0/24 goes through the VPN
-#  (split tunnel). To route ALL traffic through the VPN, change AllowedIPs
-#  in the client .conf to: 0.0.0.0/0, ::/0
-#
-#  VPS port to open: 51820/UDP
-#
-# =============================================================================
 #  CERTIFICATE SUMMARY
 # =============================================================================
 #
@@ -233,16 +205,11 @@
 #    sudo systemctl status node-red
 #    sudo journalctl -u node-red
 #
-#  WireGuard not starting:
-#    sudo systemctl status wg-quick@wg0
-#    sudo journalctl -u wg-quick@wg0
-#
 #  Re-running the script (clean reinstall):
-#    sudo systemctl stop takserver mediamtx mumble-server node-red wg-quick@wg0
+#    sudo systemctl stop takserver mediamtx mumble-server node-red
 #    sudo apt-get purge -y takserver mumble-server
 #    sudo npm uninstall -g node-red
 #    sudo userdel -r nodered 2>/dev/null || true
-#    sudo rm -rf /etc/wireguard
 #    sudo rm -rf /opt/tak
 #    sudo -u postgres dropdb --if-exists cot
 #    sudo -u postgres dropuser --if-exists martiuser
@@ -309,11 +276,6 @@ NODERED_PORT="${NODERED_PORT:-1880}"
 NODERED_USER="${NODERED_USER:-admin}"
 NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 
-# WireGuard
-WG_PORT="${WG_PORT:-51820}"
-WG_SUBNET="${WG_SUBNET:-10.13.13}"     # /24 — server gets .1, clients get .2+
-WG_DNS="${WG_DNS:-${WG_SUBNET}.1}"   # DNS via VPS over the tunnel (dnsmasq on wg0)
-
 # TAK Admin Panel
 TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
 TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
@@ -366,7 +328,7 @@ if grep -qi 'ubuntu' /etc/os-release 2>/dev/null; then
     fi
 fi
 
-# Resolve public IP once — reused for WireGuard endpoint and summary
+# Resolve public IP once — used for endpoints and summary
 PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
     || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
     || hostname -I | awk '{print $1}')"
@@ -906,133 +868,11 @@ systemctl is-active --quiet node-red && \
     success "Node-RED running on port ${NODERED_PORT}." || \
     warn "Node-RED may not have started — check: journalctl -u node-red"
 
-# ─── 13. Install WireGuard ────────────────────────────────────────────────────
-info "Installing WireGuard..."
-apt-get install -y wireguard wireguard-tools qrencode
-
-# Enable IP forwarding — write to sysctl.d so it persists on all distros
-# (Debian does not have these lines in sysctl.conf, so sed would be a no-op there)
-cat > /etc/sysctl.d/99-ragtak-forward.conf << 'EOF'
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.forwarding = 1
-EOF
-sysctl -w net.ipv4.ip_forward=1 >/dev/null
-sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
-
-# Detect WAN interface — try default route first, fall back to first non-loopback interface
-WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)"
-if [[ -z "$WAN_IF" ]]; then
-    WAN_IF="$(ip -o link show | awk -F': ' '!/lo/{print $2; exit}')"
-fi
-[[ -n "$WAN_IF" ]] || die "Could not detect WAN interface. Set WAN_IF manually and re-run."
-info "WAN interface: $WAN_IF"
-
-# Generate server keys
-wg genkey | tee /etc/wireguard/server.key | wg pubkey > /etc/wireguard/server.pub
-chmod 600 /etc/wireguard/server.key /etc/wireguard/server.pub
-WG_SERVER_PRIV="$(cat /etc/wireguard/server.key)"
-WG_SERVER_PUB="$(cat /etc/wireguard/server.pub)"
-
-# Resolve endpoint (domain if LE, otherwise public IP)
-WG_PUBLIC_IP="$PUBLIC_IP"
-WG_ENDPOINT="${DOMAIN:-$WG_PUBLIC_IP}"
-
-# Build server config and client configs
-WG_CLIENTS=("tak-admin" "${CLIENT_NAMES[@]}" "wintak")
-WG_SERVER_CONF="[Interface]
-Address = ${WG_SUBNET}.1/24
-ListenPort = ${WG_PORT}
-PrivateKey = ${WG_SERVER_PRIV}
-PostUp   = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o ${WAN_IF} -j MASQUERADE
-PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o ${WAN_IF} -j MASQUERADE
-"
-
-for i in "${!WG_CLIENTS[@]}"; do
-    CLIENT="${WG_CLIENTS[$i]}"
-    CLIENT_IP="${WG_SUBNET}.$((i + 2))"
-    CLIENT_PRIV="$(wg genkey)"
-    CLIENT_PUB="$(echo "$CLIENT_PRIV" | wg pubkey)"
-
-    # Add peer block to server config
-    WG_SERVER_CONF+="
-[Peer]
-# ${CLIENT}
-PublicKey = ${CLIENT_PUB}
-AllowedIPs = ${CLIENT_IP}/32
-"
-
-    # Write client config
-    # PostUp/PreDown use resolvectl (systemd-resolved) to set DNS per-interface
-    # so it reverts cleanly on disconnect without breaking system DNS.
-    cat > "${CERT_OUT_DIR}/wg-${CLIENT}.conf" << EOF
-[Interface]
-PrivateKey = ${CLIENT_PRIV}
-Address = ${CLIENT_IP}/32
-PostUp = resolvectl dns %i ${WG_DNS}; resolvectl domain %i ~.
-PreDown = resolvectl revert %i
-
-[Peer]
-# TAK Server
-PublicKey = ${WG_SERVER_PUB}
-Endpoint = ${WG_ENDPOINT}:${WG_PORT}
-# Routes only VPN subnet through tunnel (split tunnel).
-# Change to 0.0.0.0/0, ::/0 to route ALL traffic through the VPN.
-AllowedIPs = ${WG_SUBNET}.0/24
-PersistentKeepalive = 25
-EOF
-
-    # Generate QR code for mobile import
-    qrencode -t png -o "${CERT_OUT_DIR}/wg-${CLIENT}.png" \
-        < "${CERT_OUT_DIR}/wg-${CLIENT}.conf" 2>/dev/null && \
-        success "  WireGuard config + QR: ${CERT_OUT_DIR}/wg-${CLIENT}.conf"
-done
-
-# Lock down client configs — they contain private keys
-chmod 600 "${CERT_OUT_DIR}"/wg-*.conf 2>/dev/null || true
-
 # Give the invoking user ownership of the certs output dir so they can SCP
 # without needing sudo (script runs as root, dir is otherwise root-owned)
 chown -R "${REAL_USER}:${REAL_USER}" "${CERT_OUT_DIR}" 2>/dev/null || true
 
-# Write and lock down server config
-echo "$WG_SERVER_CONF" > /etc/wireguard/wg0.conf
-chmod 600 /etc/wireguard/wg0.conf
-
-# Enable and start
-systemctl enable --now wg-quick@wg0
-sleep 2
-systemctl is-active --quiet wg-quick@wg0 && \
-    success "WireGuard running on port ${WG_PORT}/UDP." || \
-    warn "WireGuard may not have started — check: journalctl -u wg-quick@wg0"
-
-# ─── 13b. DNS resolver for VPN clients (dnsmasq on wg0) ──────────────────────
-info "Installing dnsmasq DNS resolver for VPN clients..."
-apt-get install -y dnsmasq
-
-# Drop any existing RagTAK dnsmasq config
-rm -f /etc/dnsmasq.d/ragtak.conf
-cat > /etc/dnsmasq.d/ragtak.conf << EOF
-# RagTAK — DNS resolver for WireGuard clients only
-interface=wg0
-bind-interfaces
-listen-address=${WG_SUBNET}.1
-server=1.1.1.1
-server=8.8.8.8
-no-resolv
-no-hosts
-cache-size=1000
-EOF
-
-# Ensure dnsmasq does not also bind to loopback (avoid conflicts with systemd-resolved)
-grep -q 'except-interface=lo' /etc/dnsmasq.conf 2>/dev/null || \
-    echo 'except-interface=lo' >> /etc/dnsmasq.conf
-
-systemctl enable --now dnsmasq
-systemctl is-active --quiet dnsmasq && \
-    success "dnsmasq DNS resolver running on ${WG_SUBNET}.1:53." || \
-    warn "dnsmasq may not have started — VPN clients may lack DNS"
-
-# ─── 14. TAK Admin Panel ─────────────────────────────────────────────────────
+# ─── 13. TAK Admin Panel ─────────────────────────────────────────────────────
 info "Installing RagTak Admin Panel..."
 
 [[ -z "$TAKADMIN_PASS" ]] && TAKADMIN_PASS="$(openssl rand -base64 12 | tr -d '/+=')"
@@ -1063,11 +903,6 @@ ADMIN_PASS   = os.environ.get('TAKADMIN_PASS', 'changeme')
 TAK_DIR      = '/opt/tak'
 CERT_DIR     = f'{TAK_DIR}/certs/files'
 CERTS_SCRIPT = f'{TAK_DIR}/certs'
-WG_CONF      = '/etc/wireguard/wg0.conf'
-WG_PUB_FILE  = '/etc/wireguard/server.pub'
-WG_SUBNET    = os.environ.get('WG_SUBNET', '10.13.13')
-WG_PORT      = os.environ.get('WG_PORT', '51820')
-WG_DNS       = os.environ.get('WG_DNS', '1.1.1.1')
 PUBLIC_IP    = os.environ.get('PUBLIC_IP', '')
 CERT_PASS    = os.environ.get('CERT_PASS', 'atakatak')
 CERT_OUT_DIR = os.environ.get('CERT_OUT_DIR', '/opt/tak/certs/files')
@@ -1080,7 +915,6 @@ SERVICES = [
     ('mediamtx',           'MediaMTX'),
     ('mumble-server',      'Mumble'),
     ('node-red',           'Node-RED'),
-    ('wg-quick@wg0',       'WireGuard'),
 ]
 SAFE_SERVICES = {s for s, _ in SERVICES}
 
@@ -1231,40 +1065,7 @@ def create_user():
     if pem.exists():
         run('java', '-jar', f'{TAK_DIR}/utils/UserManager.jar', 'certmod', '-A', str(pem))
 
-    # 3. Add WireGuard peer
-    wg_errors = []
-    try:
-        conf_text = Path(WG_CONF).read_text()
-        priv = subprocess.check_output(['wg', 'genkey']).decode().strip()
-        pub  = subprocess.check_output(['wg', 'pubkey'], input=priv.encode()).decode().strip()
-        used = {int(n) for n in re.findall(rf'{re.escape(WG_SUBNET)}\.(\d+)/32', conf_text)}
-        ip   = f'{WG_SUBNET}.{next(n for n in range(2, 255) if n not in used)}'
-        srv_pub = Path(WG_PUB_FILE).read_text().strip() \
-                  if Path(WG_PUB_FILE).exists() else ''
-
-        with open(WG_CONF, 'a') as f:
-            f.write(f'\n[Peer]\n# {name}\nPublicKey = {pub}\nAllowedIPs = {ip}/32\n')
-
-        # Apply live without restarting WireGuard
-        run('wg', 'set', 'wg0', 'peer', pub, 'allowed-ips', f'{ip}/32')
-
-        client_conf = (
-            f'[Interface]\nPrivateKey = {priv}\nAddress = {ip}/32\nDNS = {WG_DNS}\n\n'
-            f'[Peer]\n# TAK Server\nPublicKey = {srv_pub}\n'
-            f'Endpoint = {HOST}:{WG_PORT}\n'
-            f'AllowedIPs = {WG_SUBNET}.0/24\nPersistentKeepalive = 25\n'
-        )
-        conf_file = out / f'wg-{name}.conf'
-        conf_file.write_text(client_conf)
-        conf_file.chmod(0o600)
-        run('qrencode', '-t', 'png', '-o', str(out / f'wg-{name}.png'), input=client_conf)
-    except Exception as e:
-        wg_errors.append(str(e))
-
-    if wg_errors:
-        flash(f'TAK cert created, but WireGuard peer failed: {wg_errors[0]}', 'warning')
-    else:
-        flash(f'User "{name}" created — TAK cert + WireGuard peer ready.', 'success')
+    flash(f'User "{name}" created — TAK certificate ready.', 'success')
     return redirect(url_for('users'))
 
 
@@ -1274,9 +1075,8 @@ def create_user():
 @login_required
 def downloads():
     out = Path(CERT_OUT_DIR)
-    p12s     = sorted(p.name for p in out.glob('*.p12'))      if out.exists() else []
-    wg_users = sorted(p.stem[3:] for p in out.glob('wg-*.conf')) if out.exists() else []
-    return render_template_string(T_DL, p12s=p12s, wg_users=wg_users, cert_pass=CERT_PASS)
+    p12s = sorted(p.name for p in out.glob('*.p12')) if out.exists() else []
+    return render_template_string(T_DL, p12s=p12s, cert_pass=CERT_PASS)
 
 
 @app.route('/download/file/<filename>')
@@ -1325,21 +1125,13 @@ def dl_atak(username):
             p = out / fn
             if p.exists():
                 z.write(p, fn)
-        for fn in [f'wg-{username}.conf', f'wg-{username}.png']:
-            p = out / fn
-            if p.exists():
-                z.write(p, fn)
         z.writestr('README.txt',
             f'TAK Device Bundle — {username}\n'
             f'==============================\n\n'
             f'ATAK / WinTAK connection\n'
             f'  Server     : ssl://{HOST}:8089\n'
             f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
-            f'  Client Cert: {username}.p12        (password: {CERT_PASS})\n\n'
-            f'WireGuard VPN (recommended)\n'
-            f'  Android/iOS : import wg-{username}.png QR code in the WireGuard app\n'
-            f'  Windows/Linux: import wg-{username}.conf\n'
-            f'  Once connected, use {WG_SUBNET}.1:8089 as the server address.\n')
+            f'  Client Cert: {username}.p12        (password: {CERT_PASS})\n')
     buf.seek(0)
     return send_file(buf, mimetype='application/zip',
                      as_attachment=True, download_name=f'tak-atak-{username}.zip')
@@ -1649,7 +1441,7 @@ T_DASH = page('''
   <a href="/users" class="link-card">
     <div class="link-icon">&#128101;</div>
     <div><div class="link-title">Manage Users</div>
-         <div class="link-desc">Certs &amp; WireGuard peers</div></div>
+         <div class="link-desc">TAK certificates</div></div>
   </a>
   <a href="/downloads" class="link-card">
     <div class="link-icon">&#128190;</div>
@@ -1670,7 +1462,7 @@ T_USERS = page('''
         <button type="submit" class="btn btn-primary">&#43; Create</button>
       </div>
     </form>
-    <small style="margin-top:.6rem;display:block">Generates a TAK client certificate, registers it on the server, and provisions a WireGuard peer.</small>
+    <small style="margin-top:.6rem;display:block">Generates a TAK client certificate and registers it on the server.</small>
   </div>
 </div>
 
@@ -1692,7 +1484,7 @@ T_USERS = page('''
       <tr>
         <td>{{ u }}</td>
         <td><a href="/download/file/{{ u }}.p12" download>&#8659; {{ u }}.p12</a></td>
-        <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; cert + WireGuard</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; ATAK bundle</a></td>
       </tr>
     {% endfor %}
     </tbody>
@@ -1731,27 +1523,26 @@ T_DL = page('''
   </table>
 </div>
 
-{% if wg_users %}
 <div class="section-title">Device Bundles</div>
 <div class="card">
-  <div class="card-header">cert + WireGuard config + QR code per device</div>
+  <div class="card-header">TAK certificate bundles per device</div>
   <table>
     <thead><tr>
-      <th>User</th><th>WireGuard config</th><th>QR code</th><th>Full bundle</th>
+      <th>User</th><th>ATAK Bundle (cert + README)</th>
     </tr></thead>
     <tbody>
-    {% for u in wg_users %}
+    {% for fn in p12s %}
+      {% set u = fn[:-4] %}
+      {% if u != 'takserver' %}
       <tr>
         <td>{{ u }}</td>
-        <td><a href="/download/file/wg-{{ u }}.conf" download>&#8659; wg-{{ u }}.conf</a></td>
-        <td><a href="/download/file/wg-{{ u }}.png" download>&#8659; QR.png</a></td>
-        <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; ATAK bundle</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; tak-atak-{{ u }}.zip</a></td>
       </tr>
+      {% endif %}
     {% endfor %}
     </tbody>
   </table>
 </div>
-{% endif %}
 ''')
 
 
@@ -1778,13 +1569,10 @@ Environment=TAKADMIN_USER=Admin
 Environment=TAKADMIN_PASS=${TAKADMIN_PASS}
 Environment=CERT_PASS=${CERT_PASS}
 Environment=CERT_OUT_DIR=${CERT_OUT_DIR}
-Environment=WG_SUBNET=${WG_SUBNET}
-Environment=WG_PORT=${WG_PORT}
-Environment=WG_DNS=${WG_DNS}
 Environment=PUBLIC_IP=${PUBLIC_IP}
 Environment=DOMAIN=${DOMAIN}
 Environment=TAKADMIN_PORT=${TAKADMIN_PORT}
-Environment=BIND_HOST=${WG_SUBNET}.1
+Environment=BIND_HOST=0.0.0.0
 Environment=SECRET_KEY=${TAKADMIN_SECRET}
 
 [Install]
@@ -1795,7 +1583,7 @@ systemctl daemon-reload
 systemctl enable --now takadmin
 sleep 2
 systemctl is-active --quiet takadmin && \
-    success "RagTak Admin Panel running on ${WG_SUBNET}.1:${TAKADMIN_PORT} (VPN only)." || \
+    success "RagTak Admin Panel running on port ${TAKADMIN_PORT}." || \
     warn "RagTak Admin Panel may not have started — check: journalctl -u takadmin"
 
 # ─── 15. Firewall ─────────────────────────────────────────────────────────────
@@ -1806,7 +1594,6 @@ SSH_PORT="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2
 SSH_PORT="${SSH_PORT:-22}"
 ufw allow "${SSH_PORT}/tcp" comment "SSH"
 [[ "$SSH_PORT" != "22" ]] && ufw allow ssh 2>/dev/null || true   # also allow 22 if non-standard
-ufw allow "${WG_PORT}/udp"        comment "WireGuard VPN"
 ufw allow "${NODERED_PORT}/tcp"   comment "Node-RED"
 ufw allow "${MUMBLE_PORT}/tcp"    comment "Mumble voice"
 ufw allow "${MUMBLE_PORT}/udp"    comment "Mumble voice/UDP"
@@ -1819,7 +1606,7 @@ if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
     ufw allow "${HLS_PORT}/tcp"   comment "MediaMTX HLS"
     ufw allow "${WEBRTC_PORT}/tcp" comment "MediaMTX WebRTC"
 fi
-ufw allow from "${WG_SUBNET}.0/24" to any port "${TAKADMIN_PORT}" proto tcp comment "TAK Admin Panel (VPN only)"
+ufw allow "${TAKADMIN_PORT}/tcp"   comment "RagTAK Admin Panel"
 ufw --force enable
 success "Firewall rules applied."
 
@@ -1854,7 +1641,6 @@ echo "    TAK Server : $(systemctl is-active takserver 2>/dev/null || echo 'unkn
 echo "    PostgreSQL : $(systemctl is-active postgresql@15-main 2>/dev/null || echo 'unknown')"
 echo "    Mumble     : $(systemctl is-active mumble-server 2>/dev/null || echo 'unknown')"
 echo "    Node-RED   : $(systemctl is-active node-red 2>/dev/null || echo 'unknown')"
-echo "    WireGuard  : $(systemctl is-active wg-quick@wg0 2>/dev/null || echo 'unknown')"
 [[ -z "${SKIP_MEDIAMTX:-}" ]] && \
 echo "    MediaMTX   : $(systemctl is-active mediamtx 2>/dev/null || echo 'unknown')"
 echo "    RagTak     : $(systemctl is-active takadmin 2>/dev/null || echo 'unknown')"
@@ -1867,9 +1653,7 @@ echo "    Enrollment : https://${DISPLAY_HOST}:${TAK_ENROLL_PORT}"
 echo "    RTSP Video : rtsp://${DISPLAY_HOST}:${RTSP_PORT}/<stream-name>"
 echo "    Mumble     : ${DISPLAY_HOST}:${MUMBLE_PORT}"
 echo "    Node-RED   : http://${DISPLAY_HOST}:${NODERED_PORT}"
-echo "    WireGuard  : ${WG_ENDPOINT}:${WG_PORT}/UDP  (server IP: ${WG_SUBNET}.1)"
-echo "    DNS (VPN)  : ${WG_SUBNET}.1:53  (dnsmasq, active when VPN is connected)"
-echo "    RagTak     : http://${WG_SUBNET}.1:${TAKADMIN_PORT}  (WireGuard VPN only)"
+echo "    RagTak     : http://${DISPLAY_HOST}:${TAKADMIN_PORT}"
 [[ $USE_LE -eq 1 ]] && \
 echo "" && \
 echo -e "  ${CYAN}Let's Encrypt${NC}" && \
@@ -1904,24 +1688,15 @@ echo "    Superuser  : SuperUser / ${MUMBLE_SUPERUSER_PASS}"
 echo "    Server pw  : ${MUMBLE_PASS}" || \
 echo "    Server pw  : (none)"
 echo ""
-echo -e "  ${CYAN}WireGuard${NC}"
-echo "    Server pub : ${WG_SERVER_PUB}"
-echo "    Subnet     : ${WG_SUBNET}.0/24"
-echo "    Configs    : (in ${CERT_OUT_DIR})"
-for client in "tak-admin" "${CLIENT_NAMES[@]}" "wintak"; do
-    echo "      wg-${client}.conf  +  wg-${client}.png (QR)"
-done
-echo ""
 echo -e "  ${CYAN}Node-RED${NC}"
 echo "    URL        : http://${DISPLAY_HOST}:${NODERED_PORT}"
 echo "    Username   : ${NODERED_USER}"
 echo "    Password   : ${NODERED_PASS}"
 echo ""
 echo -e "  ${CYAN}RagTak Admin Panel${NC}"
-echo "    URL        : http://${WG_SUBNET}.1:${TAKADMIN_PORT}"
+echo "    URL        : http://${DISPLAY_HOST}:${TAKADMIN_PORT}"
 echo "    Username   : Admin"
 echo "    Password   : ${TAKADMIN_PASS}"
-echo "    Note       : Connect to WireGuard VPN first, then open in browser"
 echo ""
 echo -e "  ${YELLOW}Logs:${NC} sudo tail -f /opt/tak/logs/takserver-messaging.log"
 echo ""
