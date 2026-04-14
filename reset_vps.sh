@@ -130,6 +130,12 @@ systemctl reset-failed 2>/dev/null || true
 
 # ─── 11. UFW — reset to defaults ─────────────────────────────────────────────
 info "Resetting UFW..."
+# iptables-persistent conflicts with and removes ufw — reinstall if missing
+if ! command -v ufw &>/dev/null; then
+    info "ufw not found (removed by iptables-persistent) — reinstalling..."
+    apt-get purge -y iptables-persistent netfilter-persistent 2>/dev/null || true
+    apt-get install -y ufw 2>/dev/null || true
+fi
 ufw --force reset
 # Re-allow SSH so we don't lock ourselves out
 SSH_PORT="$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)"
