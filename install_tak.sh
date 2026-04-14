@@ -281,7 +281,7 @@ CERT_PASS="${CERT_PASS:-atakatak}"
 # Certificate metadata
 export STATE="${STATE:-NA}"
 export CITY="${CITY:-NA}"
-export ORGANIZATION="${ORGANIZATION:-TAKStack}"
+export ORGANIZATION="${ORGANIZATION:-RagTAK}"
 export ORGANIZATIONAL_UNIT="${ORGANIZATIONAL_UNIT:-TAK}"
 
 # Database credentials (must match CoreConfig.xml)
@@ -313,6 +313,10 @@ NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 WG_PORT="${WG_PORT:-51820}"
 WG_SUBNET="${WG_SUBNET:-10.13.13}"     # /24 — server gets .1, clients get .2+
 WG_DNS="${WG_DNS:-1.1.1.1}"
+
+# TAK Admin Panel
+TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
+TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
 
 # Ports
 TAK_COT_PORT=8089
@@ -515,17 +519,17 @@ export PASS="$CERT_PASS"
 pushd "$CERTS_SCRIPT_DIR" > /dev/null
 
 info "  Generating Root CA: $CA_NAME"
-bash makeRootCa.sh --ca-name "$CA_NAME" 2>&1 | grep -E "Certificate|error|Error" | head -5
+bash makeRootCa.sh --ca-name "$CA_NAME" 2>&1 | grep -E "Certificate|error|Error" | head -5 || true
 
 info "  Generating server cert: $SERVER_NAME"
-bash makeCert.sh server "$SERVER_NAME" 2>&1 | grep -E "ok|error|Error" | head -3
+bash makeCert.sh server "$SERVER_NAME" 2>&1 | grep -E "ok|error|Error" | head -3 || true
 
 info "  Generating admin cert: $ADMIN_USER"
-bash makeCert.sh client "$ADMIN_USER" 2>&1 | grep -E "ok|error|Error" | head -3
+bash makeCert.sh client "$ADMIN_USER" 2>&1 | grep -E "ok|error|Error" | head -3 || true
 
 for name in "${CLIENT_NAMES[@]}"; do
     info "  Generating client cert: $name"
-    bash makeCert.sh client "$name" 2>&1 | grep -E "ok|error|Error" | head -2
+    bash makeCert.sh client "$name" 2>&1 | grep -E "ok|error|Error" | head -2 || true
 done
 
 popd > /dev/null
@@ -919,7 +923,486 @@ systemctl is-active --quiet wg-quick@wg0 && \
     success "WireGuard running on port ${WG_PORT}/UDP." || \
     warn "WireGuard may not have started — check: journalctl -u wg-quick@wg0"
 
-# ─── 14. Firewall ─────────────────────────────────────────────────────────────
+# ─── 14. TAK Admin Panel ─────────────────────────────────────────────────────
+info "Installing RagTak Admin Panel..."
+
+[[ -z "$TAKADMIN_PASS" ]] && TAKADMIN_PASS="$(openssl rand -base64 12 | tr -d '/+=')"
+TAKADMIN_SECRET="$(openssl rand -hex 32)"
+TAKADMIN_DIR="/opt/takadmin"
+mkdir -p "$TAKADMIN_DIR"
+
+# Install Flask
+apt-get install -y python3-flask 2>/dev/null || \
+    pip3 install flask 2>/dev/null || \
+    die "Flask install failed — cannot set up admin panel"
+
+cat > "${TAKADMIN_DIR}/takadmin.py" << 'PYEOF'
+#!/usr/bin/env python3
+"""RagTAK Admin Panel — unified management for TAK Server and companion services."""
+
+import io, os, re, secrets, shutil, subprocess, zipfile
+from functools import wraps
+from pathlib import Path
+from flask import (Flask, flash, redirect, render_template_string,
+                   request, send_file, session, url_for)
+
+app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+
+ADMIN_USER   = os.environ.get('TAKADMIN_USER', 'Admin')
+ADMIN_PASS   = os.environ.get('TAKADMIN_PASS', 'changeme')
+TAK_DIR      = '/opt/tak'
+CERT_DIR     = f'{TAK_DIR}/certs/files'
+CERTS_SCRIPT = f'{TAK_DIR}/certs'
+WG_CONF      = '/etc/wireguard/wg0.conf'
+WG_PUB_FILE  = '/etc/wireguard/server.pub'
+WG_SUBNET    = os.environ.get('WG_SUBNET', '10.13.13')
+WG_PORT      = os.environ.get('WG_PORT', '51820')
+WG_DNS       = os.environ.get('WG_DNS', '1.1.1.1')
+PUBLIC_IP    = os.environ.get('PUBLIC_IP', '')
+CERT_PASS    = os.environ.get('CERT_PASS', 'atakatak')
+CERT_OUT_DIR = os.environ.get('CERT_OUT_DIR', '/opt/tak/certs/files')
+DOMAIN       = os.environ.get('DOMAIN', '')
+HOST         = DOMAIN or PUBLIC_IP
+
+SERVICES = [
+    ('takserver',          'TAK Server'),
+    ('postgresql@15-main', 'PostgreSQL 15'),
+    ('mediamtx',           'MediaMTX'),
+    ('mumble-server',      'Mumble'),
+    ('node-red',           'Node-RED'),
+    ('wg-quick@wg0',       'WireGuard'),
+]
+SAFE_SERVICES = {s for s, _ in SERVICES}
+
+
+def run(*cmd, input=None, **kw):
+    return subprocess.run(list(cmd), capture_output=True, text=True, input=input, **kw)
+
+
+def svc_status(name):
+    return run('systemctl', 'is-active', name).stdout.strip() or 'unknown'
+
+
+def login_required(f):
+    @wraps(f)
+    def g(*a, **kw):
+        if not session.get('ok'):
+            return redirect(url_for('login'))
+        return f(*a, **kw)
+    return g
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    err = None
+    if request.method == 'POST':
+        if (request.form.get('username') == ADMIN_USER and
+                request.form.get('password') == ADMIN_PASS):
+            session['ok'] = True
+            return redirect(url_for('dashboard'))
+        err = 'Invalid username or password.'
+    return render_template_string(T_LOGIN, err=err)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+@app.route('/')
+@login_required
+def dashboard():
+    statuses = [(svc, label, svc_status(svc)) for svc, label in SERVICES]
+    return render_template_string(T_DASH, statuses=statuses)
+
+
+@app.route('/service/<name>/restart', methods=['POST'])
+@login_required
+def restart(name):
+    if name not in SAFE_SERVICES:
+        return 'Forbidden', 403
+    run('systemctl', 'restart', name)
+    flash(f'Restarted {name}.', 'success')
+    return redirect(url_for('dashboard'))
+
+
+# ── Users ─────────────────────────────────────────────────────────────────────
+
+@app.route('/users')
+@login_required
+def users():
+    p12s = sorted(p.stem for p in Path(CERT_DIR).glob('*.p12')
+                  if p.stem != 'takserver')
+    return render_template_string(T_USERS, users=p12s, cert_pass=CERT_PASS)
+
+
+@app.route('/users/create', methods=['POST'])
+@login_required
+def create_user():
+    name = request.form.get('username', '').strip()
+    if not name or not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', name):
+        flash('Invalid username — letters, numbers, hyphens, underscores only (max 32).', 'error')
+        return redirect(url_for('users'))
+
+    cert_p12 = Path(CERT_DIR) / f'{name}.p12'
+    if cert_p12.exists():
+        flash(f'User "{name}" already exists.', 'error')
+        return redirect(url_for('users'))
+
+    # 1. Generate TAK certificate
+    env = {**os.environ, 'TAKPASS': CERT_PASS, 'CAPASS': CERT_PASS, 'PASS': CERT_PASS}
+    r = run('bash', 'makeCert.sh', 'client', name, cwd=CERTS_SCRIPT, env=env)
+    if not cert_p12.exists():
+        flash(f'Certificate generation failed: {r.stderr[:300]}', 'error')
+        return redirect(url_for('users'))
+
+    # Copy cert to output dir
+    out = Path(CERT_OUT_DIR)
+    out.mkdir(parents=True, exist_ok=True)
+    shutil.copy(cert_p12, out / cert_p12.name)
+
+    # Also copy .pem for TAK registration
+    pem = Path(CERT_DIR) / f'{name}.pem'
+    if pem.exists():
+        shutil.copy(pem, out / pem.name)
+
+    # 2. Register with TAK Server
+    if pem.exists():
+        run('java', '-jar', f'{TAK_DIR}/utils/UserManager.jar', 'certmod', '-A', str(pem))
+
+    # 3. Add WireGuard peer
+    wg_errors = []
+    try:
+        conf_text = Path(WG_CONF).read_text()
+        priv = subprocess.check_output(['wg', 'genkey']).decode().strip()
+        pub  = subprocess.check_output(['wg', 'pubkey'], input=priv.encode()).decode().strip()
+        used = {int(n) for n in re.findall(rf'{re.escape(WG_SUBNET)}\.(\d+)/32', conf_text)}
+        ip   = f'{WG_SUBNET}.{next(n for n in range(2, 255) if n not in used)}'
+        srv_pub = Path(WG_PUB_FILE).read_text().strip() \
+                  if Path(WG_PUB_FILE).exists() else ''
+
+        with open(WG_CONF, 'a') as f:
+            f.write(f'\n[Peer]\n# {name}\nPublicKey = {pub}\nAllowedIPs = {ip}/32\n')
+
+        # Apply live without restarting WireGuard
+        run('wg', 'set', 'wg0', 'peer', pub, 'allowed-ips', f'{ip}/32')
+
+        client_conf = (
+            f'[Interface]\nPrivateKey = {priv}\nAddress = {ip}/32\nDNS = {WG_DNS}\n\n'
+            f'[Peer]\n# TAK Server\nPublicKey = {srv_pub}\n'
+            f'Endpoint = {HOST}:{WG_PORT}\n'
+            f'AllowedIPs = {WG_SUBNET}.0/24\nPersistentKeepalive = 25\n'
+        )
+        conf_file = out / f'wg-{name}.conf'
+        conf_file.write_text(client_conf)
+        conf_file.chmod(0o600)
+        run('qrencode', '-t', 'png', '-o', str(out / f'wg-{name}.png'), input=client_conf)
+    except Exception as e:
+        wg_errors.append(str(e))
+
+    if wg_errors:
+        flash(f'TAK cert created, but WireGuard peer failed: {wg_errors[0]}', 'warning')
+    else:
+        flash(f'User "{name}" created — TAK cert + WireGuard peer ready.', 'success')
+    return redirect(url_for('users'))
+
+
+# ── Downloads ─────────────────────────────────────────────────────────────────
+
+@app.route('/downloads')
+@login_required
+def downloads():
+    out = Path(CERT_OUT_DIR)
+    p12s     = sorted(p.name for p in out.glob('*.p12'))      if out.exists() else []
+    wg_users = sorted(p.stem[3:] for p in out.glob('wg-*.conf')) if out.exists() else []
+    return render_template_string(T_DL, p12s=p12s, wg_users=wg_users, cert_pass=CERT_PASS)
+
+
+@app.route('/download/file/<filename>')
+@login_required
+def dl_file(filename):
+    out    = Path(CERT_OUT_DIR).resolve()
+    target = (out / filename).resolve()
+    if not str(target).startswith(str(out)) or not target.exists():
+        return 'Not found', 404
+    return send_file(target, as_attachment=True)
+
+
+@app.route('/download/bundle/browser')
+@login_required
+def dl_browser():
+    buf = io.BytesIO()
+    out = Path(CERT_OUT_DIR)
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for fn in ['root-ca.pem', 'tak-admin.p12']:
+            p = out / fn
+            if p.exists():
+                z.write(p, fn)
+        z.writestr('README.txt',
+            f'TAK Browser Certificates\n'
+            f'========================\n\n'
+            f'1. Firefox > Settings > Privacy & Security > View Certificates\n'
+            f'2. Authorities tab  > Import > root-ca.pem\n'
+            f'   Check "Trust this CA to identify websites"\n'
+            f'3. Your Certificates > Import > tak-admin.p12  (password: {CERT_PASS})\n'
+            f'4. Fully restart Firefox, then open: https://{HOST}:8443\n'
+            f'   Select the tak-admin certificate when prompted.\n')
+    buf.seek(0)
+    return send_file(buf, mimetype='application/zip',
+                     as_attachment=True, download_name='tak-browser-bundle.zip')
+
+
+@app.route('/download/bundle/atak/<username>')
+@login_required
+def dl_atak(username):
+    if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', username):
+        return 'Invalid', 400
+    buf = io.BytesIO()
+    out = Path(CERT_OUT_DIR)
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for fn in ['truststore-root.p12', f'{username}.p12']:
+            p = out / fn
+            if p.exists():
+                z.write(p, fn)
+        for fn in [f'wg-{username}.conf', f'wg-{username}.png']:
+            p = out / fn
+            if p.exists():
+                z.write(p, fn)
+        z.writestr('README.txt',
+            f'TAK Device Bundle — {username}\n'
+            f'==============================\n\n'
+            f'ATAK / WinTAK connection\n'
+            f'  Server     : ssl://{HOST}:8089\n'
+            f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
+            f'  Client Cert: {username}.p12        (password: {CERT_PASS})\n\n'
+            f'WireGuard VPN (recommended)\n'
+            f'  Android/iOS : import wg-{username}.png QR code in the WireGuard app\n'
+            f'  Windows/Linux: import wg-{username}.conf\n'
+            f'  Once connected, use {WG_SUBNET}.1:8089 as the server address.\n')
+    buf.seek(0)
+    return send_file(buf, mimetype='application/zip',
+                     as_attachment=True, download_name=f'tak-atak-{username}.zip')
+
+
+# ── Templates ─────────────────────────────────────────────────────────────────
+
+_BASE = '''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RagTak Admin Panel</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    .ok      { color: #2d9e5a; font-weight: bold; }
+    .failed  { color: #c0392b; font-weight: bold; }
+    .inactive{ color: #888; }
+    .unknown { color: #aaa; }
+    .flash-success { border-left: 4px solid #2d9e5a; background: #eafaf1;
+                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
+    .flash-error   { border-left: 4px solid #c0392b; background: #fdedec;
+                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
+    .flash-warning { border-left: 4px solid #e67e22; background: #fef9e7;
+                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
+    .flash-info    { border-left: 4px solid #2980b9; background: #eaf4fb;
+                     padding: .5rem 1rem; margin-bottom: 1rem; border-radius: 4px; }
+    button.sm { padding: .2rem .6rem; font-size: .85rem; margin: 0; }
+  </style>
+</head>
+<body>
+<header class="container">
+  <nav>
+    <ul><li><strong>RagTak Admin Panel</strong></li></ul>
+    <ul>
+      <li><a href="/">Dashboard</a></li>
+      <li><a href="/users">Users</a></li>
+      <li><a href="/downloads">Downloads</a></li>
+      <li><a href="/logout">Logout</a></li>
+    </ul>
+  </nav>
+</header>
+<main class="container">
+  {% with msgs = get_flashed_messages(with_categories=True) %}
+    {% for cat, msg in msgs %}
+      <div class="flash-{{ cat }}">{{ msg }}</div>
+    {% endfor %}
+  {% endwith %}
+  CONTENT_PLACEHOLDER
+</main>
+</body>
+</html>'''
+
+def page(content):
+    return _BASE.replace('CONTENT_PLACEHOLDER', content)
+
+
+T_LOGIN = page('''
+<article style="max-width:380px;margin:5rem auto">
+  <hgroup><h2>RagTak Admin Panel</h2><p>Sign in to continue</p></hgroup>
+  {% if err %}<p style="color:#c0392b">{{ err }}</p>{% endif %}
+  <form method="post">
+    <label>Username
+      <input type="text" name="username" autofocus required>
+    </label>
+    <label>Password
+      <input type="password" name="password" required>
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+</article>
+''')
+
+T_DASH = page('''
+<h2>Service Status</h2>
+<div class="grid">
+{% for svc, label, status in statuses %}
+  <article>
+    <header><strong>{{ label }}</strong></header>
+    <p class="{{ status }}">{{ status }}</p>
+    <footer>
+      <form method="post" action="/service/{{ svc }}/restart" style="margin:0">
+        <button type="submit" class="secondary sm">Restart</button>
+      </form>
+    </footer>
+  </article>
+{% endfor %}
+</div>
+''')
+
+T_USERS = page('''
+<h2>Users</h2>
+<article>
+  <header><strong>Create User</strong></header>
+  <form method="post" action="/users/create">
+    <div class="grid">
+      <input type="text" name="username" placeholder="username"
+             pattern="[a-zA-Z0-9_-]+" maxlength="32" required>
+      <button type="submit">Create</button>
+    </div>
+  </form>
+  <small>Generates a TAK certificate, registers it on the server, and adds a WireGuard peer.</small>
+</article>
+{% if users %}
+<article>
+  <header><strong>Existing Users</strong> &nbsp;
+    <small>Certificate password: <code>{{ cert_pass }}</code></small>
+  </header>
+  <figure><table>
+    <thead><tr>
+      <th>Name</th>
+      <th>TAK Certificate</th>
+      <th>ATAK Bundle</th>
+    </tr></thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>{{ u }}</td>
+        <td><a href="/download/file/{{ u }}.p12" download>{{ u }}.p12</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>
+          cert + WireGuard config</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></figure>
+</article>
+{% else %}
+<p>No certificates found in cert directory.</p>
+{% endif %}
+''')
+
+T_DL = page('''
+<h2>Downloads</h2>
+<div class="grid">
+  <article>
+    <header><strong>Browser Access</strong></header>
+    <p>Root CA + Admin certificate for Firefox/Chrome access to the TAK web admin
+       at <code>https://{{ request.host.split(":")[0] }}:8443</code>.</p>
+    <a href="/download/bundle/browser" role="button" download>
+      Download browser-bundle.zip</a>
+  </article>
+  <article>
+    <header><strong>Individual Certificates</strong></header>
+    <p>Password for all certs: <code>{{ cert_pass }}</code></p>
+    {% for fn in p12s %}
+      <a href="/download/file/{{ fn }}" download>{{ fn }}</a><br>
+    {% endfor %}
+  </article>
+</div>
+{% if wg_users %}
+<article>
+  <header><strong>Device Bundles</strong>
+    <small> — cert + WireGuard config + QR code per device</small>
+  </header>
+  <figure><table>
+    <thead><tr>
+      <th>User</th><th>WireGuard config</th><th>QR code</th><th>Full bundle</th>
+    </tr></thead>
+    <tbody>
+    {% for u in wg_users %}
+      <tr>
+        <td>{{ u }}</td>
+        <td><a href="/download/file/wg-{{ u }}.conf" download>wg-{{ u }}.conf</a></td>
+        <td><a href="/download/file/wg-{{ u }}.png" download>wg-{{ u }}.png</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>ATAK bundle</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></figure>
+</article>
+{% endif %}
+''')
+
+
+if __name__ == '__main__':
+    bind_host = os.environ.get('BIND_HOST', '10.13.13.1')
+    port      = int(os.environ.get('TAKADMIN_PORT', '8080'))
+    app.run(host=bind_host, port=port, debug=False)
+PYEOF
+
+# Write systemd service with all config baked in as environment variables
+cat > /etc/systemd/system/takadmin.service << EOF
+[Unit]
+Description=RagTak Admin Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${TAKADMIN_DIR}
+ExecStart=/usr/bin/python3 ${TAKADMIN_DIR}/takadmin.py
+Restart=on-failure
+RestartSec=5
+Environment=TAKADMIN_USER=Admin
+Environment=TAKADMIN_PASS=${TAKADMIN_PASS}
+Environment=CERT_PASS=${CERT_PASS}
+Environment=CERT_OUT_DIR=${CERT_OUT_DIR}
+Environment=WG_SUBNET=${WG_SUBNET}
+Environment=WG_PORT=${WG_PORT}
+Environment=WG_DNS=${WG_DNS}
+Environment=PUBLIC_IP=${PUBLIC_IP}
+Environment=DOMAIN=${DOMAIN}
+Environment=TAKADMIN_PORT=${TAKADMIN_PORT}
+Environment=BIND_HOST=${WG_SUBNET}.1
+Environment=SECRET_KEY=${TAKADMIN_SECRET}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now takadmin
+sleep 2
+systemctl is-active --quiet takadmin && \
+    success "RagTak Admin Panel running on ${WG_SUBNET}.1:${TAKADMIN_PORT} (VPN only)." || \
+    warn "RagTak Admin Panel may not have started — check: journalctl -u takadmin"
+
+# ─── 15. Firewall ─────────────────────────────────────────────────────────────
 info "Configuring firewall..."
 ufw allow ssh 2>/dev/null || true
 ufw allow "${WG_PORT}/udp"        comment "WireGuard VPN"
@@ -935,6 +1418,7 @@ if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
     ufw allow "${HLS_PORT}/tcp"   comment "MediaMTX HLS"
     ufw allow "${WEBRTC_PORT}/tcp" comment "MediaMTX WebRTC"
 fi
+ufw allow from "${WG_SUBNET}.0/24" to any port "${TAKADMIN_PORT}" proto tcp comment "TAK Admin Panel (VPN only)"
 ufw --force enable
 success "Firewall rules applied."
 
@@ -972,6 +1456,7 @@ echo "    Node-RED   : $(systemctl is-active node-red 2>/dev/null || echo 'unkno
 echo "    WireGuard  : $(systemctl is-active wg-quick@wg0 2>/dev/null || echo 'unknown')"
 [[ -z "${SKIP_MEDIAMTX:-}" ]] && \
 echo "    MediaMTX   : $(systemctl is-active mediamtx 2>/dev/null || echo 'unknown')"
+echo "    RagTak     : $(systemctl is-active takadmin 2>/dev/null || echo 'unknown')"
 echo ""
 echo -e "  ${CYAN}Endpoints${NC}"
 echo "    Web Admin  : https://${DISPLAY_HOST}:${TAK_ADMIN_PORT}"
@@ -982,6 +1467,7 @@ echo "    RTSP Video : rtsp://${DISPLAY_HOST}:${RTSP_PORT}/<stream-name>"
 echo "    Mumble     : ${DISPLAY_HOST}:${MUMBLE_PORT}"
 echo "    Node-RED   : http://${DISPLAY_HOST}:${NODERED_PORT}"
 echo "    WireGuard  : ${WG_ENDPOINT}:${WG_PORT}/UDP  (server IP: ${WG_SUBNET}.1)"
+echo "    RagTak     : http://${WG_SUBNET}.1:${TAKADMIN_PORT}  (WireGuard VPN only)"
 [[ $USE_LE -eq 1 ]] && \
 echo "" && \
 echo -e "  ${CYAN}Let's Encrypt${NC}" && \
@@ -1028,6 +1514,12 @@ echo -e "  ${CYAN}Node-RED${NC}"
 echo "    URL        : http://${DISPLAY_HOST}:${NODERED_PORT}"
 echo "    Username   : ${NODERED_USER}"
 echo "    Password   : ${NODERED_PASS}"
+echo ""
+echo -e "  ${CYAN}RagTak Admin Panel${NC}"
+echo "    URL        : http://${WG_SUBNET}.1:${TAKADMIN_PORT}"
+echo "    Username   : Admin"
+echo "    Password   : ${TAKADMIN_PASS}"
+echo "    Note       : Connect to WireGuard VPN first, then open in browser"
 echo ""
 echo -e "  ${YELLOW}Logs:${NC} sudo tail -f /opt/tak/logs/takserver-messaging.log"
 echo ""
