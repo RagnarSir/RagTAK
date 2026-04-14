@@ -672,15 +672,22 @@ if [[ -n "$DOMAIN" ]]; then
         CERTBOT_OPTS+=(--register-unsafely-without-email)
     fi
 
-    certbot "${CERTBOT_OPTS[@]}" || die "Let's Encrypt failed. Make sure $DOMAIN resolves to this server's public IP and port 80 is reachable."
+    _LE_OK=0
+    if certbot "${CERTBOT_OPTS[@]}"; then
+        _LE_OK=1
+    else
+        warn "Let's Encrypt failed (rate limit, DNS, or port 80 blocked). Continuing without LE — using self-signed certs."
+        warn "Re-run with DOMAIN=${DOMAIN} once the issue is resolved to get a trusted certificate."
+    fi
 
     # Remove temporary port 80 rule
     ufw delete allow 80/tcp 2>/dev/null || true
 
-    # Create deploy hook — runs on initial deploy and every renewal
-    LE_DEPLOY="/etc/letsencrypt/renewal-hooks/deploy/takserver.sh"
-    mkdir -p "$(dirname "$LE_DEPLOY")"
-    cat > "$LE_DEPLOY" << EOF
+    if [[ $_LE_OK -eq 1 ]]; then
+        # Create deploy hook — runs on initial deploy and every renewal
+        LE_DEPLOY="/etc/letsencrypt/renewal-hooks/deploy/takserver.sh"
+        mkdir -p "$(dirname "$LE_DEPLOY")"
+        cat > "$LE_DEPLOY" << EOF
 #!/bin/bash
 # Converts renewed Let's Encrypt cert to PKCS12 and redeploys to TAK Server
 LE_LIVE="/etc/letsencrypt/live/${DOMAIN}"
@@ -702,13 +709,17 @@ chmod 640 "\${CERT_DIR}/takserver.p12" "\${CERT_DIR}/takserver.jks"
 # Restart TAK only if it is already running (skip during initial install)
 systemctl is-active --quiet takserver && systemctl restart takserver || true
 EOF
-    chmod +x "$LE_DEPLOY"
+        chmod +x "$LE_DEPLOY"
 
-    # Apply cert immediately
-    bash "$LE_DEPLOY"
+        # Apply cert immediately
+        bash "$LE_DEPLOY"
 
-    success "Let's Encrypt certificate installed and auto-renewal configured."
-    USE_LE=1
+        success "Let's Encrypt certificate installed and auto-renewal configured."
+        USE_LE=1
+    else
+        DOMAIN=""
+        USE_LE=0
+    fi
 else
     USE_LE=0
 fi
