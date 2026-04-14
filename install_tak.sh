@@ -672,18 +672,8 @@ if [[ -n "$DOMAIN" ]]; then
         CERTBOT_OPTS+=(--register-unsafely-without-email)
     fi
 
-    _LE_OK=0
+    USE_LE=0
     if certbot "${CERTBOT_OPTS[@]}"; then
-        _LE_OK=1
-    else
-        warn "Let's Encrypt failed (rate limit, DNS, or port 80 blocked). Continuing without LE — using self-signed certs."
-        warn "Re-run with DOMAIN=${DOMAIN} once the issue is resolved to get a trusted certificate."
-    fi
-
-    # Remove temporary port 80 rule
-    ufw delete allow 80/tcp 2>/dev/null || true
-
-    if [[ $_LE_OK -eq 1 ]]; then
         # Create deploy hook — runs on initial deploy and every renewal
         LE_DEPLOY="/etc/letsencrypt/renewal-hooks/deploy/takserver.sh"
         mkdir -p "$(dirname "$LE_DEPLOY")"
@@ -717,9 +707,13 @@ EOF
         success "Let's Encrypt certificate installed and auto-renewal configured."
         USE_LE=1
     else
+        warn "Let's Encrypt failed (rate limit, DNS, or port 80 blocked). Continuing without LE — using self-signed certs."
+        warn "Re-run with DOMAIN=${DOMAIN} once the issue is resolved to get a trusted certificate."
         DOMAIN=""
-        USE_LE=0
     fi
+
+    # Remove temporary port 80 rule
+    ufw delete allow 80/tcp 2>/dev/null || true
 else
     USE_LE=0
 fi
@@ -837,10 +831,7 @@ id nodered &>/dev/null || useradd -r -m -d /home/nodered -s /usr/sbin/nologin no
 # Generate password hash for the admin UI
 [[ -z "$NODERED_PASS" ]] && NODERED_PASS="$(openssl rand -base64 16)"
 NODERED_HASH="$(echo "$NODERED_PASS" | timeout 30 "$NODERED_BIN" admin hash-pw 2>/dev/null | sed 's/^Password: //' || true)"
-if [[ -z "$NODERED_HASH" ]]; then
-    warn "node-red hash-pw failed — Node-RED admin UI will have no password set"
-    NODERED_HASH='$2b$08$placeholder_set_password_manually'
-fi
+[[ -n "$NODERED_HASH" ]] || die "node-red admin hash-pw produced no output — Node-RED may not have installed correctly. Check: $NODERED_BIN admin hash-pw"
 
 # Write settings file
 mkdir -p /home/nodered/.node-red
@@ -1721,7 +1712,7 @@ EOF
     # Exclude loopback, tunnel (tun/tap), and VPN interfaces from WAN detection
     WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1 || true)"
     [[ -z "$WAN_IF" ]] && \
-        WAN_IF="$(ip -o link show | awk -F': ' '!/^[0-9]+: *(lo|tun|tap|wg|docker|veth|virbr)/{print $2; exit}')"
+        WAN_IF="$(ip -o link show | awk -F': ' '!/^[0-9]+: *(lo|tun|tap|docker|veth|virbr)/{print $2; exit}')"
     [[ -n "$WAN_IF" ]] || die "Could not detect WAN interface for OpenVPN NAT"
     info "OpenVPN NAT via interface: $WAN_IF"
     # Install iptables-persistent FIRST so /etc/iptables/ is managed correctly
