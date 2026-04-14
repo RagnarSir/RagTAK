@@ -9,6 +9,7 @@ A single script that sets up a complete tactical communications server — ready
 Running one command installs and configures everything:
 
 - **TAK Server** — the core. ATAK and WinTAK devices connect here to share locations, maps, and messages
+- **RagTak Admin Panel** — a web interface to manage services, create users, and download connection bundles
 - **Mumble** — low-latency voice comms, like a self-hosted TeamSpeak
 - **Node-RED** — visual automation tool to connect TAK data to other systems
 - **WireGuard** — VPN so your devices connect securely over the internet
@@ -46,7 +47,7 @@ Your VPS provider has its own firewall separate from the one on your server. You
 |------|----------|---------------|
 | 22 | TCP | SSH — **keep this open or you will lose access** |
 | 8089 | TCP | ATAK / WinTAK connections |
-| 8443 | TCP | Web admin panel |
+| 8443 | TCP | TAK web admin panel |
 | 8446 | TCP | Certificate enrollment |
 | 8554 | TCP + UDP | Video streaming (RTSP) |
 | 8888 | TCP | Video streaming (HLS) |
@@ -54,6 +55,8 @@ Your VPS provider has its own firewall separate from the one on your server. You
 | 64738 | TCP + UDP | Mumble voice |
 | 1880 | TCP | Node-RED |
 | 51820 | UDP | WireGuard VPN |
+
+> **Port 8080 (RagTak Admin Panel) is intentionally not listed** — it is only reachable over the WireGuard VPN. Do not open it to the internet.
 
 > Where to find this setting: AWS → Security Groups, DigitalOcean → Firewall, Hetzner → Firewall, Vultr → Firewall Rules.
 
@@ -104,12 +107,15 @@ At the end of the script you will see a summary like this:
     Node-RED   : active
     WireGuard  : active
     MediaMTX   : active
+    RagTak     : active
 
   Endpoints
     Web Admin  : https://192.168.1.11:8443
     CoT/ATAK   : ssl://192.168.1.11:8089
     Mumble     : 192.168.1.11:64738
     Node-RED   : http://192.168.1.11:1880
+    WireGuard  : 192.168.1.11:51820/UDP  (server IP: 10.13.13.1)
+    RagTak     : http://10.13.13.1:8080  (WireGuard VPN only)
 
   WireGuard
     Configs    : wg-client1.conf, wg-client1.png ...
@@ -120,31 +126,77 @@ At the end of the script you will see a summary like this:
   Node-RED
     Username   : admin
     Password   : <generated-password>
+
+  RagTak Admin Panel
+    URL        : http://10.13.13.1:8080
+    Username   : Admin
+    Password   : <generated-password>
+    Note       : Connect to WireGuard VPN first, then open in browser
 ```
 
 **Save this output** — it contains generated passwords you will need.
 
+### Where are my files?
+
+All certificates and WireGuard configs are copied to a `certs/` folder next to `install_tak.sh`:
+
+```
+install_tak.sh
+certs/
+  root-ca.pem          ← import into your browser
+  tak-admin.p12        ← admin certificate for the web panel
+  truststore-root.p12  ← trust store for ATAK / WinTAK
+  client1.p12          ← device certificate (one per device)
+  client2.p12
+  ...
+  wg-client1.conf      ← WireGuard config for device 1
+  wg-client1.png       ← QR code for device 1
+  ...
+```
+
 ---
 
-## Connecting your browser (web admin)
+## RagTak Admin Panel
 
-The TAK web admin uses client certificates for login. You need to import two files into Firefox before it will let you in.
+The admin panel is the easiest way to manage your server after install. It is only reachable over the WireGuard VPN — connect WireGuard first, then open:
 
-### Step 1 — Import the certificate authority
+```
+http://10.13.13.1:8080
+```
+
+Log in with `Admin` and the password printed in the install summary.
+
+### What you can do
+
+- **Dashboard** — see which services are running and restart any of them
+- **Users** — create a new TAK user in one click. It generates a TAK certificate, registers it on the server, and adds a WireGuard peer automatically
+- **Downloads** — download ready-to-use bundles:
+  - **Browser bundle** — root CA + admin cert, packaged with import instructions for Firefox
+  - **ATAK bundle** — client cert + WireGuard config + QR code per user, ready to copy to a phone
+
+---
+
+## Connecting your browser (TAK web admin)
+
+The TAK web admin at port 8443 uses client certificates for login — a password alone is not enough. You need to import two files into your browser first.
+
+### Firefox
+
+**Step 1 — Import the certificate authority**
 
 1. Open Firefox → type `about:preferences#privacy` in the address bar
 2. Scroll down to **Certificates** → click **View Certificates**
 3. Go to the **Authorities** tab → click **Import**
-4. Select `root-ca.pem` from the install folder
+4. Select `root-ca.pem` from the `certs/` folder
 5. Check **Trust this CA to identify websites** → click OK
 
-### Step 2 — Import your admin certificate
+**Step 2 — Import your admin certificate**
 
 1. Still in the Certificate Manager → go to **Your Certificates** tab
-2. Click **Import** → select `tak-admin.p12`
+2. Click **Import** → select `tak-admin.p12` from the `certs/` folder
 3. Password: `atakatak`
 
-### Step 3 — Open the admin panel
+**Step 3 — Open the admin panel**
 
 Close and reopen Firefox completely, then go to:
 ```
@@ -153,13 +205,22 @@ https://<your-server-ip>:8443
 
 Firefox will ask which certificate to use — select `tak-admin`.
 
-> **With Let's Encrypt:** Skip step 1 (no CA import needed). Only import `tak-admin.p12`.
+### Chrome / Chromium
+
+1. Go to `chrome://settings/certificates`
+2. Under **Authorities** → click **Import** → select `root-ca.pem` → check **Trust this certificate for identifying websites**
+3. Under **Your certificates** → click **Import** → select `tak-admin.p12` → enter password `atakatak`
+4. Fully restart Chrome, then go to `https://<your-server-ip>:8443`
+
+> **With Let's Encrypt:** Skip the CA import step entirely. Only import `tak-admin.p12`.
+
+> **Tip:** The RagTak Admin Panel at port 8080 has a **Downloads → Browser bundle** link that packages both files with step-by-step instructions.
 
 ---
 
 ## Connecting ATAK (Android)
 
-Each device needs its own client certificate. The script generates five: `client1.p12` through `client5.p12`. Use one per device.
+Each device needs its own client certificate. The script generates five: `client1.p12` through `client5.p12`. Use one per device — do not share the same `.p12` between two devices.
 
 ### Without Let's Encrypt
 
@@ -182,16 +243,20 @@ Each device needs its own client certificate. The script generates five: `client
 2. Follow the same steps above but leave the Trust Store field empty
 3. Connect to your domain name instead of an IP
 
+> **Tip:** The RagTak Admin Panel has a **Downloads** page where you can grab a per-user ATAK bundle (cert + WireGuard config + QR code) in one zip.
+
 ---
 
 ## Connecting WinTAK (Windows)
 
 Same files and same steps as ATAK above. Use `client2.p12` (or any unused client cert).
 
-To create a named user account for WinTAK:
+To create a named password-based account for WinTAK (in addition to the certificate):
 ```bash
 sudo java -jar /opt/tak/utils/UserManager.jar usermod -A -p 'YourPassword' WinTAK
 ```
+
+> `-A` grants administrator rights. Leave it out if you want a regular user account.
 
 ---
 
@@ -199,7 +264,7 @@ sudo java -jar /opt/tak/utils/UserManager.jar usermod -A -p 'YourPassword' WinTA
 
 WireGuard lets your devices connect to the TAK server securely over the internet. Once connected via VPN, devices reach TAK at `10.13.13.1` instead of the public IP.
 
-The script generates a config file and a QR code for each device in the install folder:
+The script generates a config file and a QR code for each device in the `certs/` folder:
 
 | File | For |
 |------|-----|
@@ -253,6 +318,31 @@ Node-RED lets you visually wire together TAK events, MQTT, webhooks, databases, 
 
 ---
 
+## MediaMTX (video streaming)
+
+MediaMTX receives video streams and re-publishes them in multiple formats. Useful for drone feeds, IP cameras, or body cameras.
+
+### Sending a stream to the server
+
+From a drone controller, camera, or OBS:
+```
+rtsp://<your-server-ip>:8554/<stream-name>
+```
+
+Replace `<stream-name>` with any name you choose (e.g. `drone1`).
+
+### Watching a stream
+
+| Format | URL |
+|--------|-----|
+| RTSP | `rtsp://<server>:8554/<stream-name>` |
+| HLS (browser) | `http://<server>:8888/<stream-name>` |
+| WebRTC (browser) | `http://<server>:8889/<stream-name>` |
+
+Open the HLS or WebRTC URL directly in a browser — no app needed. Use RTSP in VLC or any RTSP-capable player.
+
+---
+
 ## Customisation
 
 You can override any of these before running the script:
@@ -266,10 +356,13 @@ You can override any of these before running the script:
 | `MUMBLE_PASS` | *(empty)* | Mumble server password (empty = open server) |
 | `MUMBLE_MAX_USERS` | `50` | Max simultaneous Mumble connections |
 | `NODERED_USER` | `admin` | Node-RED login username |
-| `NODERED_PASS` | *(auto)* | Node-RED login password |
+| `NODERED_PASS` | *(auto-generated)* | Node-RED login password |
 | `WG_PORT` | `51820` | WireGuard listen port |
 | `WG_SUBNET` | `10.13.13` | VPN subnet — server gets `.1`, clients get `.2+` |
 | `WG_DNS` | `1.1.1.1` | DNS server sent to VPN clients |
+| `TAKADMIN_PORT` | `8080` | RagTak Admin Panel port (VPN only) |
+| `TAKADMIN_PASS` | *(auto-generated)* | RagTak Admin Panel password |
+| `SKIP_MEDIAMTX` | *(unset)* | Set to any value to skip MediaMTX install |
 
 Example:
 ```bash
@@ -297,7 +390,15 @@ sudo tail -50 /opt/tak/logs/takserver-messaging.log
 
 **Browser shows certificate error**
 - Make sure you imported both `root-ca.pem` (Authorities) and `tak-admin.p12` (Your Certificates)
-- Close and reopen Firefox completely after importing
+- Close and reopen the browser completely after importing
+
+**RagTak Admin Panel not loading**
+- Make sure you are connected to WireGuard first
+- The panel is only reachable at `http://10.13.13.1:8080` — it is not accessible from the internet
+```bash
+sudo systemctl status takadmin
+sudo journalctl -u takadmin -n 50
+```
 
 **Mumble not connecting**
 ```bash
@@ -324,14 +425,15 @@ sudo journalctl -u wg-quick@wg0 -n 50
 If something goes wrong and you want to start fresh:
 
 ```bash
-sudo systemctl stop takserver mediamtx mumble-server node-red wg-quick@wg0
+sudo systemctl stop takserver mediamtx mumble-server node-red wg-quick@wg0 takadmin
 sudo apt-get purge -y takserver mumble-server
-sudo rm -rf /opt/tak
+sudo rm -rf /opt/tak /opt/takadmin
 sudo -u postgres dropdb --if-exists cot
 sudo -u postgres dropuser --if-exists martiuser
 sudo npm uninstall -g node-red
 sudo userdel -r nodered 2>/dev/null || true
 sudo rm -rf /etc/wireguard /etc/letsencrypt/renewal-hooks/deploy/takserver.sh
+sudo rm -f /etc/systemd/system/takadmin.service
 sudo systemctl daemon-reload
 sudo bash install_tak.sh
 ```
