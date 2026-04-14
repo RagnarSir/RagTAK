@@ -341,8 +341,7 @@ command -v apt-get &>/dev/null || die "Requires a Debian/Ubuntu-based system."
 
 # Warn on non-LTS Ubuntu — TAK Server is only validated against LTS releases
 if grep -qi 'ubuntu' /etc/os-release 2>/dev/null; then
-    _lts_ok="$(grep -oP '(?<=LTS)' /etc/os-release 2>/dev/null || true)"
-    if [[ -z "$_lts_ok" ]]; then
+    if ! grep -q 'LTS' /etc/os-release 2>/dev/null; then
         _ver="$(grep -oP '(?<=VERSION_ID=")[^"]+' /etc/os-release 2>/dev/null || echo 'unknown')"
         echo ""
         echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
@@ -695,6 +694,9 @@ else
 fi
 
 # ─── 10. Install MediaMTX (video streaming) ──────────────────────────────────
+if [[ -n "${SKIP_MEDIAMTX:-}" ]]; then
+    info "Skipping MediaMTX (SKIP_MEDIAMTX is set)."
+else
 info "Installing MediaMTX v${MEDIAMTX_VER}..."
 MEDIAMTX_URL="https://github.com/bluenviron/mediamtx/releases/download/v${MEDIAMTX_VER}/mediamtx_v${MEDIAMTX_VER}_linux_${MEDIAMTX_ARCH}.tar.gz"
 MEDIAMTX_TMP="/tmp/mediamtx_install"
@@ -751,6 +753,7 @@ else
     warn "MediaMTX download failed — skipping video setup."
     SKIP_MEDIAMTX=1
 fi
+fi # end SKIP_MEDIAMTX check
 
 # ─── 11. Install Mumble Server ────────────────────────────────────────────────
 info "Installing Mumble server..."
@@ -918,7 +921,7 @@ AllowedIPs = ${CLIENT_IP}/32
 "
 
     # Write client config
-    cat > "${SCRIPT_DIR}/wg-${CLIENT}.conf" << EOF
+    cat > "${CERT_OUT_DIR}/wg-${CLIENT}.conf" << EOF
 [Interface]
 PrivateKey = ${CLIENT_PRIV}
 Address = ${CLIENT_IP}/32
@@ -935,9 +938,9 @@ PersistentKeepalive = 25
 EOF
 
     # Generate QR code for mobile import
-    qrencode -t png -o "${SCRIPT_DIR}/wg-${CLIENT}.png" \
-        < "${SCRIPT_DIR}/wg-${CLIENT}.conf" 2>/dev/null && \
-        success "  WireGuard config + QR: ${SCRIPT_DIR}/wg-${CLIENT}.conf"
+    qrencode -t png -o "${CERT_OUT_DIR}/wg-${CLIENT}.png" \
+        < "${CERT_OUT_DIR}/wg-${CLIENT}.conf" 2>/dev/null && \
+        success "  WireGuard config + QR: ${CERT_OUT_DIR}/wg-${CLIENT}.conf"
 done
 
 # Write and lock down server config
@@ -1450,14 +1453,14 @@ ufw allow from "${WG_SUBNET}.0/24" to any port "${TAKADMIN_PORT}" proto tcp comm
 ufw --force enable
 success "Firewall rules applied."
 
-# ─── 15. Start TAK Server ────────────────────────────────────────────────────
+# ─── 16. Start TAK Server ────────────────────────────────────────────────────
 info "Starting TAK Server..."
 systemctl enable takserver
 systemctl restart takserver
 info "Waiting 45 seconds for TAK to fully initialise..."
 sleep 45
 
-# ─── 16. Register admin certificate ──────────────────────────────────────────
+# ─── 17. Register admin certificate ──────────────────────────────────────────
 ADMIN_PEM="${CERT_DIR}/${ADMIN_USER}.pem"
 if [[ -f "$ADMIN_PEM" ]]; then
     info "Registering admin certificate..."
@@ -1467,7 +1470,7 @@ if [[ -f "$ADMIN_PEM" ]]; then
     warn "  sudo java -jar ${TAK_DIR}/utils/UserManager.jar certmod -A ${ADMIN_PEM}"
 fi
 
-# ─── 17. Summary ──────────────────────────────────────────────────────────────
+# ─── 18. Summary ──────────────────────────────────────────────────────────────
 HOST_IP="$(hostname -I | awk '{print $1}')"
 DISPLAY_HOST="${DOMAIN:-$PUBLIC_IP}"
 
@@ -1533,7 +1536,7 @@ echo ""
 echo -e "  ${CYAN}WireGuard${NC}"
 echo "    Server pub : ${WG_SERVER_PUB}"
 echo "    Subnet     : ${WG_SUBNET}.0/24"
-echo "    Configs    : (in ${SCRIPT_DIR})"
+echo "    Configs    : (in ${CERT_OUT_DIR})"
 for client in "tak-admin" "${CLIENT_NAMES[@]}" "wintak"; do
     echo "      wg-${client}.conf  +  wg-${client}.png (QR)"
 done
