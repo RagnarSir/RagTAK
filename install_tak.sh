@@ -637,7 +637,7 @@ done
 
 # Auto-import certs into Firefox for the invoking user
 REAL_USER="${SUDO_USER:-$USER}"
-REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+REAL_HOME="$(getent passwd "$REAL_USER" 2>/dev/null | cut -d: -f6 || true)"
 FF_PROFILE="$(find "${REAL_HOME}/.mozilla/firefox" "${REAL_HOME}/.config/mozilla/firefox" \
     -maxdepth 2 -name "cert9.db" 2>/dev/null | head -1 | xargs -r dirname 2>/dev/null || true)"
 
@@ -848,7 +848,7 @@ id nodered &>/dev/null || useradd -r -m -d /home/nodered -s /usr/sbin/nologin no
 
 # Generate password hash for the admin UI
 [[ -z "$NODERED_PASS" ]] && NODERED_PASS="$(openssl rand -base64 16)"
-NODERED_HASH="$("$NODERED_BIN" admin hash-pw "$NODERED_PASS" 2>/dev/null)"
+NODERED_HASH="$(timeout 30 "$NODERED_BIN" admin hash-pw "$NODERED_PASS" 2>/dev/null || true)"
 if [[ -z "$NODERED_HASH" ]]; then
     warn "node-red hash-pw failed — Node-RED admin UI will have no password set"
     NODERED_HASH='$2b$08$placeholder_set_password_manually'
