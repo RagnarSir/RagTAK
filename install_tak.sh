@@ -850,7 +850,7 @@ id nodered &>/dev/null || useradd -r -m -d /home/nodered -s /usr/sbin/nologin no
 
 # Generate password hash for the admin UI
 [[ -z "$NODERED_PASS" ]] && NODERED_PASS="$(openssl rand -base64 16)"
-NODERED_HASH="$(timeout 30 "$NODERED_BIN" admin hash-pw "$NODERED_PASS" 2>/dev/null || true)"
+NODERED_HASH="$(echo "$NODERED_PASS" | timeout 30 "$NODERED_BIN" admin hash-pw 2>/dev/null | sed 's/^Password: //' || true)"
 if [[ -z "$NODERED_HASH" ]]; then
     warn "node-red hash-pw failed — Node-RED admin UI will have no password set"
     NODERED_HASH='$2b$08$placeholder_set_password_manually'
