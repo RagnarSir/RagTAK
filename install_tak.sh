@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  TAK Server Installation Script
-#  Version   : 1.0
-#  Target OS : Ubuntu 22.04 / 24.04, Debian, Linux Mint
-#  Installs  : TAK Server 5.7, PostgreSQL 15, Java 17, MediaMTX (video), PKI
+#  RagTAK -- TAK Server Installation Script
+#  Version   : 2.0
+#  Target OS : Ubuntu 22.04 / 24.04, Debian 11/12, Linux Mint 21+
+#  Installs  : TAK Server 5.7, PostgreSQL 15, Full PKI, MediaMTX, Mumble,
+#              Node-RED, RagTAK Admin Panel, OpenVPN (optional), UFW firewall
 #
 # =============================================================================
 #  OVERVIEW
 # =============================================================================
 #
 #  This script performs a fully automated TAK Server installation including:
-#    - PostgreSQL 15 database setup
+#    - PostgreSQL 15 + PostGIS database setup
 #    - TAK Server .deb installation and configuration
-#    - Full PKI certificate generation (CA, server, admin, 5 client certs)
+#    - Full PKI certificate generation (Root CA, server, admin, 5 client certs)
 #    - Automatic Firefox certificate import (desktop installs)
-#    - Let's Encrypt SSL certificate (optional, set DOMAIN=)
+#    - Let's Encrypt SSL certificate (optional, set DOMAIN= -- non-fatal if it
+#      fails, falls back to self-signed automatically)
 #    - MediaMTX RTSP/HLS/WebRTC video streaming server
 #    - Mumble voice communication server
-#    - Node-RED flow automation
-#    - RagTAK Admin Panel (Flask web UI for service management)
+#    - Node-RED flow automation (dedicated user, port 1880)
+#    - RagTAK Admin Panel (Flask web UI -- service control, user/cert creation)
+#    - OpenVPN (optional -- locks all services behind VPN tunnel for security)
 #    - UFW firewall configuration
 #
+#  When OpenVPN is chosen, only SSH (22) and OpenVPN (1194/UDP) are exposed to
+#  the internet. All other services are VPN-only (reachable at 10.8.0.1).
+#  Inline .ovpn configs for each user are generated automatically in certs/.
+#
 # =============================================================================
-#  STEP 1 — DOWNLOAD THE TAK SERVER PACKAGE
+#  STEP 1 -- DOWNLOAD THE TAK SERVER PACKAGE
 # =============================================================================
 #
-#  TAK Server is export-controlled software — you must register to download it.
+#  TAK Server is export-controlled software -- you must register to download it.
 #
 #    1. Create a free account at https://tak.gov
 #    2. Go to Products > TAK Server
@@ -34,102 +41,134 @@
 #    4. Place the .deb file in the same directory as this script
 #
 # =============================================================================
-#  STEP 2 — PREPARE YOUR SYSTEM
+#  STEP 2 -- PREPARE YOUR SYSTEM
 # =============================================================================
 #
 #  LOCAL MACHINE (Ubuntu/Debian/Mint desktop):
 #    No special preparation needed. The script handles everything.
 #
 #  VPS / CLOUD SERVER:
-#    You must open the following ports in your provider's firewall BEFORE
-#    running the script (AWS Security Groups, DigitalOcean Firewall, etc.):
+#    Open the following ports in your provider's firewall BEFORE running the
+#    script (AWS Security Groups, DigitalOcean Firewall, OVH Network ACL, etc.).
+#    The script configures UFW automatically, but the provider firewall is
+#    separate -- both must allow traffic.
 #
-#      Port 22    / TCP  — SSH (keep this open or you'll lose access)
-#      Port 8089  / TCP  — ATAK / WinTAK device connections (CoT over SSL)
-#      Port 8443  / TCP  — Web admin interface
-#      Port 8446  / TCP  — Certificate enrollment
-#      Port 8554  / TCP  — MediaMTX RTSP video (optional)
-#      Port 8554  / UDP  — MediaMTX RTSP/UDP video (optional)
-#      Port 8888  / TCP  — MediaMTX HLS video (optional)
-#      Port 8889  / TCP  — MediaMTX WebRTC video (optional)
-#      Port 8189  / UDP  — MediaMTX WebRTC ICE (optional)
-#      Port 64738 / TCP  — Mumble voice
-#      Port 64738 / UDP  — Mumble voice/UDP
-#      Port 1880  / TCP  — Node-RED web UI
-#      Port 8080  / TCP  — RagTAK Admin Panel
+#    WITHOUT OpenVPN (all services public):
+#      Port 22    / TCP  -- SSH
+#      Port 8089  / TCP  -- ATAK / WinTAK / iTAK (CoT over SSL)
+#      Port 8443  / TCP  -- TAK web admin interface
+#      Port 8446  / TCP  -- Certificate enrollment
+#      Port 8554  / TCP  -- MediaMTX RTSP video (optional)
+#      Port 8554  / UDP  -- MediaMTX RTSP/UDP video (optional)
+#      Port 8888  / TCP  -- MediaMTX HLS video (optional)
+#      Port 8889  / TCP  -- MediaMTX WebRTC video (optional)
+#      Port 8189  / UDP  -- MediaMTX WebRTC ICE/STUN (optional)
+#      Port 64738 / TCP  -- Mumble voice
+#      Port 64738 / UDP  -- Mumble voice/UDP
+#      Port 1880  / TCP  -- Node-RED web UI
+#      Port 8080  / TCP  -- RagTAK Admin Panel
 #
-#    Note: The script configures UFW (Linux firewall) automatically, but on
-#    cloud providers UFW and the provider's firewall are independent — both
-#    must allow the ports.
+#    WITH OpenVPN (recommended for VPS -- all services behind VPN):
+#      Port 22   / TCP  -- SSH
+#      Port 1194 / UDP  -- OpenVPN
+#      (All other ports are blocked from the internet; reachable via VPN only)
 #
 # =============================================================================
-#  STEP 3 — RUN THE SCRIPT
+#  STEP 3 -- RUN THE SCRIPT
 # =============================================================================
 #
-#    sudo bash install_tak.sh
+#    Basic (prompts for OpenVPN choice at runtime):
+#      sudo bash install_tak.sh
 #
-#  The script takes approximately 2-5 minutes to complete.
+#    With Let's Encrypt TLS (recommended for public-facing installs):
+#      sudo DOMAIN=tak.example.com bash install_tak.sh
+#
+#    Non-interactive with OpenVPN:
+#      sudo DOMAIN=tak.example.com INSTALL_OPENVPN=yes bash install_tak.sh
+#
+#    Non-interactive without OpenVPN:
+#      sudo DOMAIN=tak.example.com INSTALL_OPENVPN=no bash install_tak.sh
+#
+#  The script takes approximately 5-10 minutes to complete.
 #  Do NOT interrupt it once started.
 #
 # =============================================================================
-#  STEP 4 — ACCESS THE WEB ADMIN (BROWSER)
+#  STEP 4 -- ACCESS THE WEB ADMIN (BROWSER)
 # =============================================================================
 #
 #  On a LOCAL machine:
 #    The script automatically imports the admin certificate and Root CA into
 #    Firefox. After install, close and reopen Firefox, then go to:
 #      https://<your-ip>:8443
-#    Firefox will prompt you to select the tak-admin certificate — select it.
+#    Firefox will prompt you to select the tak-admin certificate -- select it.
 #
 #  On a VPS (no desktop):
-#    Copy these two files from the install directory to your local machine:
-#      tak-admin.p12      — your admin client certificate
-#      root-ca.pem        — the certificate authority
+#    Copy these two files from the certs/ directory to your local machine:
+#      tak-admin.p12      -- your admin client certificate
+#      root-ca.pem        -- the certificate authority
 #    Then import them into Firefox manually:
 #      1. Open Firefox > Settings > Privacy & Security > View Certificates
 #      2. Authorities tab > Import > select root-ca.pem
 #         Check "Trust this CA to identify websites"
 #      3. Your Certificates tab > Import > select tak-admin.p12
 #         Password: atakatak
-#    Then open: https://<your-server-ip>:8443
+#    Then open: https://<your-server-ip-or-domain>:8443
+#
+#    With OpenVPN: connect to VPN first, then open https://10.8.0.1:8443
 #
 # =============================================================================
-#  STEP 5 — CONNECT ATAK (ANDROID)
+#  STEP 5 -- OPENVPN (if installed)
+# =============================================================================
+#
+#  Install the OpenVPN Connect app on each device (Android, iOS, Windows, Linux).
+#  Transfer the appropriate .ovpn file from certs/ to the device and import it:
+#
+#    tak-admin.ovpn    -- for the admin / your main device
+#    client1.ovpn      -- for additional ATAK/WinTAK/iTAK devices
+#    client2-5.ovpn    -- for further devices
+#    wintak.ovpn       -- for a dedicated WinTAK machine
+#
+#  Once connected to the VPN, use 10.8.0.1 as the server address for all
+#  services (TAK, Mumble, Node-RED, Admin Panel).
+#
+# =============================================================================
+#  STEP 6 -- CONNECT ATAK / iTAK (ANDROID / iOS)
 # =============================================================================
 #
 #  WITHOUT Let's Encrypt (self-signed):
-#    Transfer these files to the Android device (USB, email, cloud storage):
-#      truststore-root.p12   — server trust store (lets ATAK trust your server)
-#      client1.p12           — client identity certificate (use one per device)
+#    Transfer these files to the device (USB, email, cloud storage):
+#      truststore-root.p12   -- server trust store
+#      client1.p12           -- client identity certificate (one per device)
 #
-#    In ATAK:
+#    In ATAK / iTAK:
 #      1. Settings > Network Preferences > TAK Servers > Add (+)
-#      2. Enter your server address and port 8089, protocol SSL
+#      2. Server address: <your-ip-or-domain> (or 10.8.0.1 if using OpenVPN)
+#         Port: 8089 / Protocol: SSL
 #      3. Trust Store  : truststore-root.p12  password: atakatak
 #      4. Client Cert  : client1.p12          password: atakatak
-#      5. Tap OK — the status indicator should turn green
+#      5. Tap OK -- the status indicator should turn green
 #
 #  WITH Let's Encrypt (DOMAIN set):
 #    Transfer only the client cert to the device:
-#      client1.p12           — client identity certificate (use one per device)
+#      client1.p12           -- client identity certificate (one per device)
 #
-#    In ATAK:
+#    In ATAK / iTAK:
 #      1. Settings > Network Preferences > TAK Servers > Add (+)
-#      2. Enter your domain and port 8089, protocol SSL
+#      2. Server address: <your-domain> / Port: 8089 / Protocol: SSL
 #      3. Client Cert  : client1.p12  password: atakatak
-#         (No trust store needed — Let's Encrypt is trusted automatically)
-#      4. Tap OK — the status indicator should turn green
+#         (No trust store needed -- Let's Encrypt is trusted automatically)
+#      4. Tap OK -- the status indicator should turn green
 #
 #  Each device should use its own client cert (client1 through client5).
 #  Do not reuse the same cert on multiple devices.
 #
 # =============================================================================
-#  STEP 6 — CONNECT WINTAK (WINDOWS)
+#  STEP 7 -- CONNECT WINTAK (WINDOWS)
 # =============================================================================
 #
 #  Transfer these files to the Windows machine:
-#    truststore-root.p12   — server trust store (not needed with Let's Encrypt)
-#    client2.p12           — client identity certificate
+#    truststore-root.p12   -- server trust store (not needed with Let's Encrypt)
+#    client2.p12           -- client identity certificate
 #
 #  In WinTAK, follow the same server connection steps as ATAK above.
 #
@@ -137,26 +176,26 @@
 #    sudo java -jar /opt/tak/utils/UserManager.jar usermod -A -p 'YourPassword' WinTAK
 #
 # =============================================================================
-#  STEP 7 — CONNECT MUMBLE (VOICE)
+#  STEP 8 -- CONNECT MUMBLE (VOICE)
 # =============================================================================
 #
 #  Download the Mumble client from https://www.mumble.info
 #
 #  Connect using:
-#    Address  : <your-server-ip-or-domain>
+#    Address  : <your-server-ip-or-domain>  (or 10.8.0.1 if using OpenVPN)
 #    Port     : 64738
 #    Username : anything
 #    Password : (the server password shown in the install summary, if set)
 #
-#  The SuperUser password is printed at the end of the install — save it.
+#  The SuperUser password is printed at the end of the install -- save it.
 #  Use it to create channels and manage permissions via the Mumble client.
 #
 # =============================================================================
-#  STEP 8 — ACCESS NODE-RED
+#  STEP 9 -- ACCESS NODE-RED
 # =============================================================================
 #
 #  Open in a browser:
-#    http://<your-server-ip-or-domain>:1880
+#    http://<your-server-ip-or-domain>:1880  (or http://10.8.0.1:1880 via VPN)
 #
 #  Login with the credentials printed at the end of the install summary.
 #
@@ -166,16 +205,33 @@
 #    - Bridge TAK to MQTT, webhooks, or databases
 #
 # =============================================================================
+#  STEP 10 -- RAGTAK ADMIN PANEL
+# =============================================================================
+#
+#  Open in a browser:
+#    http://<your-server-ip>:8080  (or http://10.8.0.1:8080 via VPN)
+#
+#  Login with the admin password printed at the end of the install summary.
+#
+#  The admin panel allows you to:
+#    - Start / stop / restart all services
+#    - Create new TAK users (generates client cert + registers in TAK Server)
+#    - View live service status
+#
+# =============================================================================
 #  CERTIFICATE SUMMARY
 # =============================================================================
 #
 #  All certificates are generated with password: atakatak
-#  They are stored in /opt/tak/certs/files/ and copied to this directory.
+#  Stored in the certs/ subdirectory next to this script.
 #
-#    root-ca.pem            — Root CA (import into Firefox Authorities)
-#    truststore-root.p12    — Trust store for ATAK/WinTAK devices
-#    tak-admin.p12          — Admin cert for browser access
-#    client1-5.p12          — Client certs for ATAK/WinTAK devices
+#    root-ca.pem            -- Root CA (import into Firefox Authorities)
+#    truststore-root.p12    -- Trust store for ATAK/WinTAK/iTAK devices
+#    tak-admin.p12          -- Admin cert for browser access to TAK web admin
+#    client1-5.p12          -- Client certs for ATAK/WinTAK/iTAK devices
+#    tak-admin.ovpn         -- OpenVPN config for admin device (if OpenVPN installed)
+#    client1-5.ovpn         -- OpenVPN configs for each client (if OpenVPN installed)
+#    wintak.ovpn            -- OpenVPN config for WinTAK (if OpenVPN installed)
 #
 # =============================================================================
 #  TROUBLESHOOTING
@@ -195,8 +251,13 @@
 #
 #  ATAK "Socket is closed" or IO errors:
 #    - Confirm the device is on the same network / VPN as the server
-#    - Confirm port 8089 is open in all firewalls
+#    - Confirm port 8089 is open in all firewalls (or device is on VPN)
 #    - Use truststore-root.p12 (not root-ca.pem) on ATAK devices
+#
+#  OpenVPN not connecting:
+#    sudo systemctl status openvpn@server
+#    sudo journalctl -u openvpn@server
+#    Confirm port 1194/UDP is open in the provider firewall
 #
 #  Mumble not starting:
 #    sudo systemctl status mumble-server
@@ -206,24 +267,17 @@
 #    sudo systemctl status node-red
 #    sudo journalctl -u node-red
 #
-#  Re-running the script (clean reinstall):
-#    sudo systemctl stop takserver mediamtx mumble-server node-red
-#    sudo apt-get purge -y takserver mumble-server
-#    sudo npm uninstall -g node-red
-#    sudo userdel -r nodered 2>/dev/null || true
-#    sudo rm -rf /opt/tak
-#    sudo -u postgres dropdb --if-exists cot
-#    sudo -u postgres dropuser --if-exists martiuser
-#    sudo rm -f /etc/systemd/system/mediamtx.service \
-#               /usr/local/bin/mediamtx /etc/mediamtx/mediamtx.yml \
-#               /etc/letsencrypt/renewal-hooks/deploy/takserver.sh
-#    sudo systemctl daemon-reload
+#  MediaMTX HLS/WebRTC not working:
+#    sudo systemctl status mediamtx
+#    sudo journalctl -u mediamtx
+#    Confirm port 8189/UDP is open for WebRTC ICE
+#
+#  Clean reinstall (wipe everything and start fresh):
+#    sudo bash reset_vps.sh
+#    # Then re-run:
 #    sudo bash install_tak.sh
-#    # With Let's Encrypt:
-#    DOMAIN=tak.example.com sudo bash install_tak.sh
 #
 # =============================================================================
-
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
