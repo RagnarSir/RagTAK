@@ -763,7 +763,8 @@ apt-get install -y nodejs
 npm install -g --unsafe-perm node-red 2>/dev/null
 
 # Resolve the node-red binary path (varies: /usr/bin or /usr/local/bin depending on npm prefix)
-NODERED_BIN="$(command -v node-red 2>/dev/null || npm bin -g 2>/dev/null)/node-red"
+NODERED_BIN="$(command -v node-red 2>/dev/null)"
+[[ -x "$NODERED_BIN" ]] || NODERED_BIN="$(npm prefix -g 2>/dev/null)/bin/node-red"
 [[ -x "$NODERED_BIN" ]] || NODERED_BIN="$(find /usr/local/bin /usr/bin -name node-red 2>/dev/null | head -1)"
 [[ -x "$NODERED_BIN" ]] || die "node-red binary not found after install — check: npm install -g node-red"
 info "node-red binary: $NODERED_BIN"
