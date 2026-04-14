@@ -1714,19 +1714,23 @@ OVPN_HEADER
 net.ipv4.ip_forward = 1
 EOF
 
-    # NAT masquerade so traffic from the VPN subnet routes correctly
+    # NAT masquerade so traffic from the VPN subnet routes correctly.
+    # We use UFW's before.rules rather than iptables-persistent because
+    # iptables-persistent conflicts with and removes ufw on Ubuntu 24.04.
     # Exclude loopback, tunnel (tun/tap), and VPN interfaces from WAN detection
     WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1 || true)"
     [[ -z "$WAN_IF" ]] && \
         WAN_IF="$(ip -o link show | awk -F': ' '!/^[0-9]+: *(lo|tun|tap|docker|veth|virbr)/{print $2; exit}')"
     [[ -n "$WAN_IF" ]] || die "Could not detect WAN interface for OpenVPN NAT"
     info "OpenVPN NAT via interface: $WAN_IF"
-    # Install iptables-persistent FIRST so /etc/iptables/ is managed correctly
-    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent 2>/dev/null || true
-    iptables -t nat -A POSTROUTING -s "${OPENVPN_SUBNET}.0/24" -o "$WAN_IF" -j MASQUERADE || true
-    # Save rules now that iptables-persistent owns the directory
-    mkdir -p /etc/iptables
-    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+
+    # Inject NAT masquerade into UFW's before.rules (persists across reboots via UFW)
+    if ! grep -q "RAGTAK-OPENVPN-NAT" /etc/ufw/before.rules 2>/dev/null; then
+        sed -i "1s|^|# RAGTAK-OPENVPN-NAT\n*nat\n:POSTROUTING ACCEPT [0:0]\n-A POSTROUTING -s ${OPENVPN_SUBNET}.0/24 -o ${WAN_IF} -j MASQUERADE\nCOMMIT\n\n|" \
+            /etc/ufw/before.rules
+    fi
+    # UFW also needs forward policy set to ACCEPT
+    sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
 
     systemctl enable --now openvpn@server
     sleep 2
