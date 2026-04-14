@@ -438,7 +438,7 @@ apt-get install -y \
     postgresql-15 postgresql-15-postgis-3 postgresql-client-15 2>/dev/null
 
 # Set Java 17 as default and export JAVA_HOME
-JAVA17_PATH="$(update-alternatives --list java 2>/dev/null | grep java-17 | head -1)"
+JAVA17_PATH="$(update-alternatives --list java 2>/dev/null | grep java-17 | head -1 || true)"
 if [[ -n "$JAVA17_PATH" ]]; then
     update-alternatives --set java "$JAVA17_PATH" 2>/dev/null || true
     export JAVA_HOME="${JAVA17_PATH%/bin/java}"
@@ -1483,7 +1483,7 @@ systemctl is-active --quiet takadmin && \
 info "Configuring firewall..."
 # Always allow the actual SSH port — read from sshd_config to handle non-standard ports
 SSH_PORT="$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null \
-    | awk '{print $2}' | head -1)"
+    | awk '{print $2}' | head -1 || true)"
 SSH_PORT="${SSH_PORT:-22}"
 ufw allow "${SSH_PORT}/tcp" comment "SSH"
 [[ "$SSH_PORT" != "22" ]] && ufw allow ssh 2>/dev/null || true   # also allow 22 if non-standard
