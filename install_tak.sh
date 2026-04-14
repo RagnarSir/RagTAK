@@ -1593,6 +1593,7 @@ Environment=DOMAIN=${DOMAIN}
 Environment=TAKADMIN_PORT=${TAKADMIN_PORT}
 Environment=BIND_HOST=0.0.0.0
 Environment=SECRET_KEY=${TAKADMIN_SECRET}
+Environment=OPENVPN_INSTALLED=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo 1 || echo "")
 
 [Install]
 WantedBy=multi-user.target
@@ -1608,10 +1609,13 @@ systemctl is-active --quiet takadmin && \
 # ─── 14. OpenVPN ─────────────────────────────────────────────────────────────
 if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
     info "Installing OpenVPN..."
-    apt-get install -y openvpn easy-rsa
+    apt-get install -y openvpn easy-rsa || die "openvpn/easy-rsa install failed"
 
     EASYRSA_DIR="/etc/openvpn/easy-rsa"
-    make-cadir "$EASYRSA_DIR"
+    # Remove any previous run so make-cadir gets a clean directory
+    rm -rf "$EASYRSA_DIR"
+    make-cadir "$EASYRSA_DIR" || die "make-cadir failed — is easy-rsa installed?"
+    [[ -x "${EASYRSA_DIR}/easyrsa" ]] || die "easyrsa not found at ${EASYRSA_DIR}/easyrsa"
 
     # Build PKI — separate from TAK certs
     cd "$EASYRSA_DIR"
@@ -1620,8 +1624,10 @@ if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
     ./easyrsa --batch gen-req server nopass </dev/null
     ./easyrsa --batch sign-req server server </dev/null
 
-    # TLS authentication key
-    openvpn --genkey secret /etc/openvpn/ta.key
+    # TLS authentication key — syntax changed between OpenVPN 2.5 and 2.6; try both
+    openvpn --genkey secret /etc/openvpn/ta.key 2>/dev/null \
+        || openvpn --genkey --secret /etc/openvpn/ta.key \
+        || die "Failed to generate OpenVPN TLS auth key"
 
     # Server config — ECDH avoids slow DH parameter generation
     mkdir -p /var/log/openvpn
@@ -1692,16 +1698,29 @@ OVPN_HEADER
     chown -R "${REAL_USER}:${REAL_USER}" "${CERT_OUT_DIR}" 2>/dev/null || true
 
     cd /
+
+    # Enable IP forwarding so VPN clients can reach the server's services
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null
+    cat > /etc/sysctl.d/99-ragtak-openvpn.conf << 'EOF'
+net.ipv4.ip_forward = 1
+EOF
+
+    # NAT masquerade so traffic from the VPN subnet routes correctly
+    WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1 || true)"
+    [[ -z "$WAN_IF" ]] && WAN_IF="$(ip -o link show | awk -F': ' '!/lo/{print $2; exit}')"
+    [[ -n "$WAN_IF" ]] || die "Could not detect WAN interface for OpenVPN NAT"
+    info "OpenVPN NAT via interface: $WAN_IF"
+    iptables -t nat -A POSTROUTING -s "${OPENVPN_SUBNET}.0/24" -o "$WAN_IF" -j MASQUERADE || true
+    # Persist iptables rules across reboots
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent 2>/dev/null || true
+
     systemctl enable --now openvpn@server
     sleep 2
     systemctl is-active --quiet openvpn@server && \
         success "OpenVPN running on port ${OPENVPN_PORT}/${OPENVPN_PROTO}." || \
         warn "OpenVPN may not have started — check: journalctl -u openvpn@server"
-
-    # Tell the admin panel that OpenVPN is installed so it shows in the service list
-    echo "Environment=OPENVPN_INSTALLED=1" >> /etc/systemd/system/takadmin.service
-    systemctl daemon-reload
-    systemctl restart takadmin
 fi
 
 # ─── 15. Firewall ─────────────────────────────────────────────────────────────
@@ -1858,7 +1877,7 @@ echo "    Password   : ${TAKADMIN_PASS}"
 if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
 echo ""
 echo -e "  ${CYAN}OpenVPN${NC}"
-echo "    Port       : ${OPENVPN_PORT}/${OPENVPN_PROTO^^}"
+echo "    Port       : ${OPENVPN_PORT}/$(tr '[:lower:]' '[:upper:]' <<< "$OPENVPN_PROTO")"
 echo "    VPN subnet : ${OPENVPN_SUBNET}.0/24  (server: ${OPENVPN_SUBNET}.1)"
 echo "    Configs    : (in ${CERT_OUT_DIR})"
 for _c in "tak-admin" "${CLIENT_NAMES[@]}" "wintak"; do
