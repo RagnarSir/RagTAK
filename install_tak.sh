@@ -991,6 +991,10 @@ done
 # Lock down client configs — they contain private keys
 chmod 600 "${CERT_OUT_DIR}"/wg-*.conf 2>/dev/null || true
 
+# Give the invoking user ownership of the certs output dir so they can SCP
+# without needing sudo (script runs as root, dir is otherwise root-owned)
+chown -R "${REAL_USER}:${REAL_USER}" "${CERT_OUT_DIR}" 2>/dev/null || true
+
 # Write and lock down server config
 echo "$WG_SERVER_CONF" > /etc/wireguard/wg0.conf
 chmod 600 /etc/wireguard/wg0.conf
