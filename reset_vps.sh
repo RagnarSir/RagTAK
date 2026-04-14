@@ -94,6 +94,15 @@ rm -f /etc/apt/sources.list.d/nodesource.list /etc/apt/keyrings/nodesource.gpg
 apt-get purge -y nodejs 2>/dev/null || true
 success "Node-RED removed."
 
+
+# ─── 7b. dnsmasq ─────────────────────────────────────────────────────────────
+info "Removing dnsmasq..."
+systemctl stop dnsmasq 2>/dev/null || true
+systemctl disable dnsmasq 2>/dev/null || true
+apt-get purge -y dnsmasq dnsmasq-base 2>/dev/null || true
+rm -f /etc/dnsmasq.d/ragtak.conf
+success "dnsmasq removed."
+
 # ─── 8. WireGuard ────────────────────────────────────────────────────────────
 info "Removing WireGuard..."
 ip link delete wg0 2>/dev/null || true

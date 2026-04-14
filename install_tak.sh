@@ -312,7 +312,7 @@ NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 # WireGuard
 WG_PORT="${WG_PORT:-51820}"
 WG_SUBNET="${WG_SUBNET:-10.13.13}"     # /24 — server gets .1, clients get .2+
-WG_DNS="${WG_DNS:-1.1.1.1}"
+WG_DNS="${WG_DNS:-${WG_SUBNET}.1}"   # DNS via VPS over the tunnel (dnsmasq on wg0)
 
 # TAK Admin Panel
 TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
@@ -1001,6 +1001,33 @@ sleep 2
 systemctl is-active --quiet wg-quick@wg0 && \
     success "WireGuard running on port ${WG_PORT}/UDP." || \
     warn "WireGuard may not have started — check: journalctl -u wg-quick@wg0"
+
+# ─── 13b. DNS resolver for VPN clients (dnsmasq on wg0) ──────────────────────
+info "Installing dnsmasq DNS resolver for VPN clients..."
+apt-get install -y dnsmasq
+
+# Drop any existing RagTAK dnsmasq config
+rm -f /etc/dnsmasq.d/ragtak.conf
+cat > /etc/dnsmasq.d/ragtak.conf << EOF
+# RagTAK — DNS resolver for WireGuard clients only
+interface=wg0
+bind-interfaces
+listen-address=${WG_SUBNET}.1
+server=1.1.1.1
+server=8.8.8.8
+no-resolv
+no-hosts
+cache-size=1000
+EOF
+
+# Ensure dnsmasq does not also bind to loopback (avoid conflicts with systemd-resolved)
+grep -q 'except-interface=lo' /etc/dnsmasq.conf 2>/dev/null || \
+    echo 'except-interface=lo' >> /etc/dnsmasq.conf
+
+systemctl enable --now dnsmasq
+systemctl is-active --quiet dnsmasq && \
+    success "dnsmasq DNS resolver running on ${WG_SUBNET}.1:53." || \
+    warn "dnsmasq may not have started — VPN clients may lack DNS"
 
 # ─── 14. TAK Admin Panel ─────────────────────────────────────────────────────
 info "Installing RagTak Admin Panel..."
@@ -1838,6 +1865,7 @@ echo "    RTSP Video : rtsp://${DISPLAY_HOST}:${RTSP_PORT}/<stream-name>"
 echo "    Mumble     : ${DISPLAY_HOST}:${MUMBLE_PORT}"
 echo "    Node-RED   : http://${DISPLAY_HOST}:${NODERED_PORT}"
 echo "    WireGuard  : ${WG_ENDPOINT}:${WG_PORT}/UDP  (server IP: ${WG_SUBNET}.1)"
+echo "    DNS (VPN)  : ${WG_SUBNET}.1:53  (dnsmasq, active when VPN is connected)"
 echo "    RagTak     : http://${WG_SUBNET}.1:${TAKADMIN_PORT}  (WireGuard VPN only)"
 [[ $USE_LE -eq 1 ]] && \
 echo "" && \
