@@ -1026,7 +1026,7 @@ cat > "${TAKADMIN_DIR}/takadmin.py" << 'PYEOF'
 import io, os, re, secrets, shutil, subprocess, zipfile
 from functools import wraps
 from pathlib import Path
-from flask import (Flask, flash, redirect, render_template_string,
+from flask import (Flask, flash, jsonify, redirect, render_template_string,
                    request, send_file, session, url_for)
 
 app = Flask(__name__)
@@ -1067,6 +1067,43 @@ def svc_status(name):
     return run('systemctl', 'is-active', name).stdout.strip() or 'unknown'
 
 
+def system_stats():
+    stats = {}
+    try:
+        with open('/proc/loadavg') as f:
+            parts = f.read().split()
+            stats['load1'] = parts[0]
+            stats['load5'] = parts[1]
+    except Exception:
+        stats['load1'] = stats['load5'] = '?'
+    try:
+        lines = run('free', '-m').stdout.splitlines()
+        mem = lines[1].split()
+        total, used = int(mem[1]), int(mem[2])
+        stats['ram_used'] = used
+        stats['ram_total'] = total
+        stats['ram_pct'] = int(used / total * 100) if total else 0
+    except Exception:
+        stats['ram_used'] = stats['ram_total'] = stats['ram_pct'] = 0
+    try:
+        lines = run('df', '-m', '/').stdout.splitlines()
+        parts = lines[1].split()
+        total, used = int(parts[1]), int(parts[2])
+        stats['disk_used'] = used // 1024
+        stats['disk_total'] = total // 1024
+        stats['disk_pct'] = int(used / total * 100) if total else 0
+    except Exception:
+        stats['disk_used'] = stats['disk_total'] = stats['disk_pct'] = 0
+    try:
+        uptime_sec = float(open('/proc/uptime').read().split()[0])
+        h = int(uptime_sec // 3600)
+        m = int((uptime_sec % 3600) // 60)
+        stats['uptime'] = f'{h}h {m}m'
+    except Exception:
+        stats['uptime'] = '?'
+    return stats
+
+
 def login_required(f):
     @wraps(f)
     def g(*a, **kw):
@@ -1102,7 +1139,16 @@ def logout():
 @login_required
 def dashboard():
     statuses = [(svc, label, svc_status(svc)) for svc, label in SERVICES]
-    return render_template_string(T_DASH, statuses=statuses)
+    stats = system_stats()
+    return render_template_string(T_DASH, statuses=statuses, stats=stats, host=HOST)
+
+
+@app.route('/api/stats')
+@login_required
+def api_stats():
+    statuses = {label: svc_status(svc) for svc, label in SERVICES}
+    stats = system_stats()
+    return jsonify(services=statuses, **stats)
 
 
 @app.route('/service/<name>/restart', methods=['POST'])
@@ -1284,135 +1330,203 @@ _BASE = '''<!doctype html>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg:       #0d1117;
-      --surface:  #161b22;
-      --border:   #30363d;
-      --text:     #e6edf3;
-      --muted:    #8b949e;
-      --accent:   #238636;
-      --accent-h: #2ea043;
-      --danger:   #da3633;
-      --warn:     #d29922;
-      --info:     #1f6feb;
-      --link:     #58a6ff;
-      --radius:   6px;
-      --font:     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --bg:        #0a0e14;
+      --surface:   #111720;
+      --surface2:  #161d2a;
+      --border:    #1e2d3d;
+      --border2:   #2a3a4e;
+      --text:      #cdd9e5;
+      --muted:     #6b8099;
+      --accent:    #1f7a3a;
+      --accent-h:  #26a148;
+      --accent-glow: rgba(38,161,72,.15);
+      --danger:    #c0392b;
+      --danger-bg: #1a0f0f;
+      --warn:      #b7860d;
+      --warn-bg:   #1a1505;
+      --ok-bg:     #0a1a0f;
+      --link:      #4fa3e0;
+      --radius:    8px;
+      --font:      -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     body { background: var(--bg); color: var(--text); font-family: var(--font);
            font-size: 14px; line-height: 1.6; min-height: 100vh; }
     a { color: var(--link); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    code { background: #21262d; padding: .1em .4em; border-radius: 3px;
-           font-size: .9em; font-family: monospace; }
+    a:hover { color: #7dc4f5; text-decoration: none; }
+    code { background: var(--surface2); padding: .15em .45em; border-radius: 4px;
+           font-size: .85em; font-family: "SFMono-Regular", Consolas, monospace;
+           color: #e2c97e; border: 1px solid var(--border); }
 
-    /* Nav */
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+    /* ── Nav ── */
     nav { background: var(--surface); border-bottom: 1px solid var(--border);
-          padding: 0 1.5rem; display: flex; align-items: center;
-          justify-content: space-between; height: 52px; }
-    .nav-brand { font-weight: 700; font-size: 1rem; color: var(--text);
-                 display: flex; align-items: center; gap: .5rem; }
-    .nav-brand span { color: var(--accent-h); }
-    .nav-links { display: flex; gap: 1.5rem; }
-    .nav-links a { color: var(--muted); font-size: .875rem; }
-    .nav-links a:hover { color: var(--text); text-decoration: none; }
-    .nav-links a.active { color: var(--text); border-bottom: 2px solid var(--accent-h);
-                          padding-bottom: 2px; }
+          padding: 0 2rem; display: flex; align-items: center;
+          justify-content: space-between; height: 54px;
+          position: sticky; top: 0; z-index: 100;
+          box-shadow: 0 1px 12px rgba(0,0,0,.4); }
+    .nav-brand { font-weight: 700; font-size: .95rem; letter-spacing: .02em;
+                 color: var(--text); display: flex; align-items: center; gap: .4rem; }
+    .nav-brand .tri { color: var(--accent-h); font-size: 1.1rem; }
+    .nav-brand .sub { color: var(--accent-h); }
+    .nav-links { display: flex; gap: .25rem; }
+    .nav-links a { color: var(--muted); font-size: .875rem; padding: .4rem .85rem;
+                   border-radius: 6px; transition: background .15s, color .15s; }
+    .nav-links a:hover { background: var(--surface2); color: var(--text); }
+    .nav-links a.active { background: var(--surface2); color: var(--text);
+                          border: 1px solid var(--border2); }
+    .nav-links a.logout { color: #8b4a4a; }
+    .nav-links a.logout:hover { background: #1a0f0f; color: #e07070; }
 
-    /* Layout */
-    .container { max-width: 1000px; margin: 0 auto; padding: 2rem 1.5rem; }
+    /* ── Layout ── */
+    .page { max-width: 1100px; margin: 0 auto; padding: 1.75rem 2rem; }
 
-    /* Flash messages */
-    .flash { padding: .75rem 1rem; border-radius: var(--radius);
-             margin-bottom: 1rem; font-size: .875rem; border: 1px solid; }
-    .flash-success { background: #0d2818; border-color: #238636; color: #3fb950; }
-    .flash-error   { background: #2d1318; border-color: #da3633; color: #f85149; }
-    .flash-warning { background: #2d2008; border-color: #d29922; color: #e3b341; }
-    .flash-info    { background: #0d1f38; border-color: #1f6feb; color: #58a6ff; }
+    /* ── Flash ── */
+    .flash { padding: .75rem 1rem; border-radius: var(--radius); margin-bottom: 1.25rem;
+             font-size: .875rem; border: 1px solid; display: flex; align-items: center; gap: .5rem; }
+    .flash-success { background: var(--ok-bg);     border-color: #1f7a3a; color: #4ecb71; }
+    .flash-error   { background: var(--danger-bg); border-color: #7a1f1f; color: #e07070; }
+    .flash-warning { background: var(--warn-bg);   border-color: #7a5a10; color: #e2b84a; }
+    .flash-info    { background: #0a1520;           border-color: #1f5080; color: #4fa3e0; }
 
-    /* Cards */
+    /* ── Section heading ── */
+    .section-title { font-size: .7rem; font-weight: 700; color: var(--muted);
+                     text-transform: uppercase; letter-spacing: .1em;
+                     margin-bottom: .75rem; margin-top: 1.75rem; }
+    .section-title:first-child { margin-top: 0; }
+
+    /* ── Metric cards ── */
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-bottom: .25rem; }
+    .metric { background: var(--surface); border: 1px solid var(--border);
+              border-radius: var(--radius); padding: 1rem 1.25rem;
+              display: flex; flex-direction: column; gap: .25rem; }
+    .metric-label { font-size: .7rem; color: var(--muted); text-transform: uppercase;
+                    letter-spacing: .08em; font-weight: 600; }
+    .metric-value { font-size: 1.6rem; font-weight: 700; color: var(--text); line-height: 1.2; }
+    .metric-sub   { font-size: .75rem; color: var(--muted); }
+    .progress { height: 3px; background: var(--border); border-radius: 2px; margin-top: .4rem; }
+    .progress-bar { height: 100%; border-radius: 2px; transition: width .3s; }
+    .bar-ok   { background: var(--accent-h); }
+    .bar-warn { background: #d29922; }
+    .bar-crit { background: var(--danger); }
+
+    /* ── Service grid ── */
+    .svc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem; }
+    .svc-card { background: var(--surface); border: 1px solid var(--border);
+                border-radius: var(--radius); padding: 1rem 1.1rem;
+                display: flex; flex-direction: column; gap: .6rem;
+                transition: border-color .15s; position: relative; overflow: hidden; }
+    .svc-card::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0;
+                        width: 3px; border-radius: var(--radius) 0 0 var(--radius); }
+    .svc-card.ok::before      { background: var(--accent-h); }
+    .svc-card.failed::before  { background: var(--danger); }
+    .svc-card.activating::before { background: var(--warn); }
+    .svc-card.inactive::before   { background: var(--border2); }
+    .svc-card.unknown::before    { background: var(--border2); }
+    .svc-card:hover { border-color: var(--border2); }
+    .svc-name { font-weight: 600; font-size: .9rem; }
+    .svc-status { display: flex; align-items: center; gap: .4rem; font-size: .8rem; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-ok         { background: var(--accent-h); box-shadow: 0 0 6px var(--accent-h); }
+    .dot-failed     { background: #e05050; box-shadow: 0 0 6px #e05050; }
+    .dot-activating { background: #d29922; box-shadow: 0 0 6px #d29922; }
+    .dot-inactive   { background: var(--muted); }
+    .dot-unknown    { background: var(--muted); }
+    .status-text-ok         { color: #4ecb71; }
+    .status-text-failed     { color: #e07070; }
+    .status-text-activating { color: #e2b84a; }
+    .status-text-inactive   { color: var(--muted); }
+    .status-text-unknown    { color: var(--muted); }
+
+    /* ── Quick links ── */
+    .links-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem; }
+    .link-card { background: var(--surface); border: 1px solid var(--border);
+                 border-radius: var(--radius); padding: .9rem 1.1rem;
+                 display: flex; align-items: center; gap: .75rem;
+                 transition: border-color .15s, background .15s; }
+    .link-card:hover { border-color: var(--border2); background: var(--surface2); }
+    .link-icon { font-size: 1.3rem; flex-shrink: 0; }
+    .link-title { font-size: .875rem; font-weight: 600; color: var(--text); }
+    .link-desc  { font-size: .75rem; color: var(--muted); }
+
+    /* ── Buttons ── */
+    .btn { display: inline-flex; align-items: center; gap: .35rem;
+           padding: .4rem .9rem; border-radius: 6px; font-size: .825rem;
+           font-weight: 500; cursor: pointer; border: 1px solid;
+           text-align: center; line-height: 1.4; transition: all .15s;
+           font-family: var(--font); }
+    .btn-primary   { background: var(--accent);  border-color: var(--accent-h); color: #fff; }
+    .btn-primary:hover { background: var(--accent-h); }
+    .btn-secondary { background: transparent; border-color: var(--border2); color: var(--text); }
+    .btn-secondary:hover { border-color: var(--muted); background: var(--surface2); }
+    .btn-danger    { background: transparent; border-color: #7a1f1f; color: #e07070; }
+    .btn-danger:hover { background: var(--danger-bg); }
+    .btn-sm { padding: .25rem .6rem; font-size: .78rem; }
+    .btn-full { width: 100%; justify-content: center; }
+
+    /* ── Card ── */
     .card { background: var(--surface); border: 1px solid var(--border);
-            border-radius: var(--radius); margin-bottom: 1rem; }
-    .card-header { padding: .75rem 1rem; border-bottom: 1px solid var(--border);
-                   font-weight: 600; font-size: .875rem; color: var(--muted);
-                   text-transform: uppercase; letter-spacing: .05em; }
-    .card-body { padding: 1rem; }
+            border-radius: var(--radius); margin-bottom: 1rem; overflow: hidden; }
+    .card-header { padding: .7rem 1.1rem; border-bottom: 1px solid var(--border);
+                   font-weight: 600; font-size: .78rem; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: .07em;
+                   display: flex; align-items: center; justify-content: space-between; }
+    .card-body { padding: 1.1rem; }
 
-    /* Grid */
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            gap: 1rem; }
-
-    /* Service status tiles */
-    .svc-tile { background: var(--surface); border: 1px solid var(--border);
-                border-radius: var(--radius); padding: 1rem;
-                display: flex; flex-direction: column; gap: .5rem; }
-    .svc-name { font-weight: 600; font-size: .875rem; }
-    .badge { display: inline-block; padding: .2em .6em; border-radius: 20px;
-             font-size: .75rem; font-weight: 600; }
-    .badge-ok      { background: #0d2818; color: #3fb950; border: 1px solid #238636; }
-    .badge-failed  { background: #2d1318; color: #f85149; border: 1px solid #da3633; }
-    .badge-inactive{ background: #21262d; color: #8b949e; border: 1px solid #30363d; }
-    .badge-unknown { background: #21262d; color: #8b949e; border: 1px solid #30363d; }
-
-    /* Buttons */
-    .btn { display: inline-block; padding: .4rem .9rem; border-radius: var(--radius);
-           font-size: .875rem; font-weight: 500; cursor: pointer; border: 1px solid;
-           text-align: center; line-height: 1.4; }
-    .btn-primary { background: var(--accent); border-color: var(--accent-h);
-                   color: #fff; }
-    .btn-primary:hover { background: var(--accent-h); text-decoration: none; }
-    .btn-secondary { background: transparent; border-color: var(--border);
-                     color: var(--text); }
-    .btn-secondary:hover { border-color: var(--muted); text-decoration: none; }
-    .btn-sm { padding: .25rem .6rem; font-size: .8rem; }
-    button.btn { font-family: var(--font); }
-
-    /* Forms */
+    /* ── Forms ── */
     input[type=text], input[type=password] {
-      background: var(--bg); border: 1px solid var(--border); color: var(--text);
-      border-radius: var(--radius); padding: .5rem .75rem; font-size: .875rem;
-      width: 100%; font-family: var(--font); }
-    input:focus { outline: none; border-color: var(--link); }
-    label { display: block; margin-bottom: .25rem; font-size: .875rem; color: var(--muted); }
+      background: var(--bg); border: 1px solid var(--border2); color: var(--text);
+      border-radius: 6px; padding: .5rem .8rem; font-size: .875rem;
+      width: 100%; font-family: var(--font); transition: border-color .15s; }
+    input:focus { outline: none; border-color: var(--link); box-shadow: 0 0 0 3px rgba(79,163,224,.1); }
+    label { display: block; margin-bottom: .3rem; font-size: .8rem; color: var(--muted); font-weight: 500; }
     .form-group { margin-bottom: 1rem; }
     .input-row { display: flex; gap: .5rem; }
     .input-row input { flex: 1; }
 
-    /* Table */
+    /* ── Table ── */
     table { width: 100%; border-collapse: collapse; font-size: .875rem; }
-    th { text-align: left; padding: .6rem 1rem; color: var(--muted);
-         font-weight: 600; border-bottom: 1px solid var(--border);
-         font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; }
-    td { padding: .6rem 1rem; border-bottom: 1px solid var(--border); }
+    th { text-align: left; padding: .6rem 1rem; color: var(--muted); font-weight: 600;
+         border-bottom: 1px solid var(--border); font-size: .72rem;
+         text-transform: uppercase; letter-spacing: .07em; }
+    td { padding: .65rem 1rem; border-bottom: 1px solid var(--border); color: var(--text); }
     tr:last-child td { border-bottom: none; }
-    tr:hover td { background: #1c2128; }
+    tr:hover td { background: var(--surface2); }
 
-    /* Login page */
+    /* ── Login ── */
     .login-wrap { min-height: 100vh; display: flex; align-items: center;
                   justify-content: center; background: var(--bg); }
     .login-box { background: var(--surface); border: 1px solid var(--border);
-                 border-radius: var(--radius); padding: 2rem; width: 340px; }
-    .login-title { font-size: 1.25rem; font-weight: 700; margin-bottom: .25rem; }
-    .login-sub { color: var(--muted); font-size: .875rem; margin-bottom: 1.5rem; }
-    .login-err { color: #f85149; font-size: .875rem; margin-bottom: 1rem; }
+                 border-radius: 10px; padding: 2rem 2.25rem; width: 360px;
+                 box-shadow: 0 8px 32px rgba(0,0,0,.5); }
+    .login-logo { font-size: 1.4rem; font-weight: 800; margin-bottom: .2rem; }
+    .login-logo span { color: var(--accent-h); }
+    .login-sub { color: var(--muted); font-size: .85rem; margin-bottom: 1.75rem; }
+    .login-err { background: var(--danger-bg); border: 1px solid #7a1f1f;
+                 color: #e07070; padding: .6rem .9rem; border-radius: 6px;
+                 font-size: .85rem; margin-bottom: 1rem; }
 
-    h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; }
-    p  { color: var(--muted); font-size: .875rem; margin-bottom: .75rem; }
-    small { font-size: .8rem; color: var(--muted); }
+    p { color: var(--muted); font-size: .875rem; margin-bottom: .75rem; }
+    small { font-size: .78rem; color: var(--muted); }
   </style>
 </head>
 <body>
 {% if request.path != "/login" %}
 <nav>
-  <div class="nav-brand">&#9650; RagTAK <span>Admin</span></div>
+  <div class="nav-brand">
+    <span class="tri">&#9650;</span> RagTAK <span class="sub">Admin</span>
+  </div>
   <div class="nav-links">
     <a href="/" {% if request.path == "/" %}class="active"{% endif %}>Dashboard</a>
     <a href="/users" {% if request.path == "/users" %}class="active"{% endif %}>Users</a>
     <a href="/downloads" {% if request.path == "/downloads" %}class="active"{% endif %}>Downloads</a>
-    <a href="/logout">Logout</a>
+    <a href="/logout" class="logout">Logout</a>
   </div>
 </nav>
 {% endif %}
-<div class="container">
+<div class="page">
   {% with msgs = get_flashed_messages(with_categories=True) %}
     {% for cat, msg in msgs %}
       <div class="flash flash-{{ cat }}">{{ msg }}</div>
@@ -1430,8 +1544,8 @@ def page(content):
 T_LOGIN = page('''
 <div class="login-wrap">
   <div class="login-box">
-    <div class="login-title">&#9650; RagTAK Admin</div>
-    <div class="login-sub">Sign in to continue</div>
+    <div class="login-logo">&#9650; RagTAK <span>Admin</span></div>
+    <div class="login-sub">Tactical Operations Center</div>
     {% if err %}<div class="login-err">{{ err }}</div>{% endif %}
     <form method="post">
       <div class="form-group">
@@ -1442,45 +1556,105 @@ T_LOGIN = page('''
         <label>Password</label>
         <input type="password" name="password" required>
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%">Sign in</button>
+      <button type="submit" class="btn btn-primary btn-full">Sign in</button>
     </form>
   </div>
 </div>
 ''')
 
 T_DASH = page('''
-<h2>Service Status</h2>
-<div class="grid">
+<div class="section-title">System</div>
+<div class="metrics">
+  {% set lf = stats.load1|float %}
+  <div class="metric">
+    <div class="metric-label">CPU Load (1m)</div>
+    <div class="metric-value">{{ stats.load1 }}</div>
+    <div class="metric-sub">5m avg: {{ stats.load5 }}</div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Memory</div>
+    <div class="metric-value">{{ stats.ram_pct }}<span style="font-size:.9rem;color:var(--muted)">%</span></div>
+    <div class="metric-sub">{{ stats.ram_used }} / {{ stats.ram_total }} MB</div>
+    <div class="progress"><div class="progress-bar {% if stats.ram_pct > 85 %}bar-crit{% elif stats.ram_pct > 65 %}bar-warn{% else %}bar-ok{% endif %}"
+         style="width:{{ stats.ram_pct }}%"></div></div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Disk</div>
+    <div class="metric-value">{{ stats.disk_pct }}<span style="font-size:.9rem;color:var(--muted)">%</span></div>
+    <div class="metric-sub">{{ stats.disk_used }} / {{ stats.disk_total }} GB</div>
+    <div class="progress"><div class="progress-bar {% if stats.disk_pct > 85 %}bar-crit{% elif stats.disk_pct > 65 %}bar-warn{% else %}bar-ok{% endif %}"
+         style="width:{{ stats.disk_pct }}%"></div></div>
+  </div>
+  <div class="metric">
+    <div class="metric-label">Uptime</div>
+    <div class="metric-value" style="font-size:1.2rem">{{ stats.uptime }}</div>
+    <div class="metric-sub">server runtime</div>
+  </div>
+</div>
+
+<div class="section-title">Services</div>
+<div class="svc-grid">
 {% for svc, label, status in statuses %}
-  <div class="svc-tile">
+  <div class="svc-card {{ status }}">
     <div class="svc-name">{{ label }}</div>
-    <div><span class="badge badge-{{ status }}">{{ status }}</span></div>
+    <div class="svc-status">
+      <div class="dot dot-{{ status }}"></div>
+      <span class="status-text-{{ status }}">{{ status }}</span>
+    </div>
     <form method="post" action="/service/{{ svc }}/restart" style="margin:0">
-      <button type="submit" class="btn btn-secondary btn-sm">Restart</button>
+      <button type="submit" class="btn btn-secondary btn-sm">&#8635; Restart</button>
     </form>
   </div>
 {% endfor %}
 </div>
+
+<div class="section-title">Quick Links</div>
+<div class="links-grid">
+  <a href="https://{{ host }}:8443" target="_blank" class="link-card">
+    <div class="link-icon">&#127760;</div>
+    <div><div class="link-title">TAK Web Admin</div>
+         <div class="link-desc">Mission management UI</div></div>
+  </a>
+  <a href="http://{{ host }}:1880" target="_blank" class="link-card">
+    <div class="link-icon">&#9654;</div>
+    <div><div class="link-title">Node-RED</div>
+         <div class="link-desc">Flow automation</div></div>
+  </a>
+  <a href="/users" class="link-card">
+    <div class="link-icon">&#128101;</div>
+    <div><div class="link-title">Manage Users</div>
+         <div class="link-desc">Certs &amp; WireGuard peers</div></div>
+  </a>
+  <a href="/downloads" class="link-card">
+    <div class="link-icon">&#128190;</div>
+    <div><div class="link-title">Downloads</div>
+         <div class="link-desc">Certs, bundles, configs</div></div>
+  </a>
+</div>
 ''')
 
 T_USERS = page('''
-<h2>Users</h2>
+<div class="section-title">Create User</div>
 <div class="card" style="margin-bottom:1.5rem">
-  <div class="card-header">Create User</div>
   <div class="card-body">
     <form method="post" action="/users/create">
       <div class="input-row">
-        <input type="text" name="username" placeholder="username"
+        <input type="text" name="username" placeholder="e.g. soldier1"
                pattern="[a-zA-Z0-9_-]+" maxlength="32" required>
-        <button type="submit" class="btn btn-primary">Create</button>
+        <button type="submit" class="btn btn-primary">&#43; Create</button>
       </div>
     </form>
-    <small style="margin-top:.5rem;display:block">Generates a TAK certificate, registers it on the server, and adds a WireGuard peer.</small>
+    <small style="margin-top:.6rem;display:block">Generates a TAK client certificate, registers it on the server, and provisions a WireGuard peer.</small>
   </div>
 </div>
+
+<div class="section-title">Existing Users</div>
 {% if users %}
 <div class="card">
-  <div class="card-header">Existing Users &nbsp;<small>cert password: <code>{{ cert_pass }}</code></small></div>
+  <div class="card-header">
+    <span>{{ users|length }} user(s)</span>
+    <span>Cert password: <code>{{ cert_pass }}</code></span>
+  </div>
   <table>
     <thead><tr>
       <th>Name</th>
@@ -1491,8 +1665,8 @@ T_USERS = page('''
     {% for u in users %}
       <tr>
         <td>{{ u }}</td>
-        <td><a href="/download/file/{{ u }}.p12" download>{{ u }}.p12</a></td>
-        <td><a href="/download/bundle/atak/{{ u }}" download>cert + WireGuard</a></td>
+        <td><a href="/download/file/{{ u }}.p12" download>&#8659; {{ u }}.p12</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; cert + WireGuard</a></td>
       </tr>
     {% endfor %}
     </tbody>
@@ -1504,30 +1678,37 @@ T_USERS = page('''
 ''')
 
 T_DL = page('''
-<h2>Downloads</h2>
-<div class="grid" style="margin-bottom:1.5rem">
-  <div class="card">
-    <div class="card-header">Browser Access</div>
-    <div class="card-body">
-      <p>Root CA + Admin cert for Firefox/Chrome access to the TAK web admin at
+<div class="section-title">Browser Access</div>
+<div class="card" style="margin-bottom:1.5rem">
+  <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div>
+      <p style="margin:0 0 .25rem">Root CA + Admin certificate for browser access to
          <code>https://{{ request.host.split(":")[0] }}:8443</code>.</p>
-      <a href="/download/bundle/browser" class="btn btn-primary btn-sm" download>
-        Download browser-bundle.zip</a>
+      <small>Import into Firefox/Chrome to access the TAK web admin UI.</small>
     </div>
-  </div>
-  <div class="card">
-    <div class="card-header">Individual Certificates</div>
-    <div class="card-body">
-      <p>Password for all certs: <code>{{ cert_pass }}</code></p>
-      {% for fn in p12s %}
-        <a href="/download/file/{{ fn }}" download>{{ fn }}</a><br>
-      {% endfor %}
-    </div>
+    <a href="/download/bundle/browser" class="btn btn-primary" download>&#8659; browser-bundle.zip</a>
   </div>
 </div>
+
+<div class="section-title">Individual Certificates &nbsp;<small style="text-transform:none;font-weight:400">password: <code>{{ cert_pass }}</code></small></div>
+<div class="card" style="margin-bottom:1.5rem">
+  <table>
+    <thead><tr><th>File</th><th>Download</th></tr></thead>
+    <tbody>
+    {% for fn in p12s %}
+      <tr>
+        <td><code>{{ fn }}</code></td>
+        <td><a href="/download/file/{{ fn }}" download>&#8659; Download</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
 {% if wg_users %}
+<div class="section-title">Device Bundles</div>
 <div class="card">
-  <div class="card-header">Device Bundles <small>— cert + WireGuard config + QR code per device</small></div>
+  <div class="card-header">cert + WireGuard config + QR code per device</div>
   <table>
     <thead><tr>
       <th>User</th><th>WireGuard config</th><th>QR code</th><th>Full bundle</th>
@@ -1536,9 +1717,9 @@ T_DL = page('''
     {% for u in wg_users %}
       <tr>
         <td>{{ u }}</td>
-        <td><a href="/download/file/wg-{{ u }}.conf" download>wg-{{ u }}.conf</a></td>
-        <td><a href="/download/file/wg-{{ u }}.png" download>wg-{{ u }}.png</a></td>
-        <td><a href="/download/bundle/atak/{{ u }}" download>ATAK bundle</a></td>
+        <td><a href="/download/file/wg-{{ u }}.conf" download>&#8659; wg-{{ u }}.conf</a></td>
+        <td><a href="/download/file/wg-{{ u }}.png" download>&#8659; QR.png</a></td>
+        <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; ATAK bundle</a></td>
       </tr>
     {% endfor %}
     </tbody>
