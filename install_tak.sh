@@ -962,11 +962,14 @@ AllowedIPs = ${CLIENT_IP}/32
 "
 
     # Write client config
+    # PostUp/PreDown use resolvectl (systemd-resolved) to set DNS per-interface
+    # so it reverts cleanly on disconnect without breaking system DNS.
     cat > "${CERT_OUT_DIR}/wg-${CLIENT}.conf" << EOF
 [Interface]
 PrivateKey = ${CLIENT_PRIV}
 Address = ${CLIENT_IP}/32
-DNS = ${WG_DNS}
+PostUp = resolvectl dns %i ${WG_DNS}; resolvectl domain %i ~.
+PreDown = resolvectl revert %i
 
 [Peer]
 # TAK Server
