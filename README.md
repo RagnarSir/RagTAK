@@ -54,6 +54,7 @@ The script automatically configures the firewall on your server (UFW). However, 
 | 8554 | TCP + UDP | Video streaming (RTSP) |
 | 8888 | TCP | Video streaming (HLS) |
 | 8889 | TCP | Video streaming (WebRTC) |
+| 8189 | UDP | Video streaming (WebRTC ICE) |
 | 64738 | TCP + UDP | Mumble voice |
 | 1880 | TCP | Node-RED |
 | 8080 | TCP | RagTAK Admin Panel |

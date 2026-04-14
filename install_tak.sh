@@ -52,6 +52,7 @@
 #      Port 8554  / UDP  — MediaMTX RTSP/UDP video (optional)
 #      Port 8888  / TCP  — MediaMTX HLS video (optional)
 #      Port 8889  / TCP  — MediaMTX WebRTC video (optional)
+#      Port 8189  / UDP  — MediaMTX WebRTC ICE (optional)
 #      Port 64738 / TCP  — Mumble voice
 #      Port 64738 / UDP  — Mumble voice/UDP
 #      Port 1880  / TCP  — Node-RED web UI
@@ -292,6 +293,7 @@ TAK_ENROLL_PORT=8446
 RTSP_PORT=8554
 HLS_PORT=8888
 WEBRTC_PORT=8889
+WEBRTC_ICE_PORT=8189   # UDP — required for WebRTC peer connections
 
 TAK_DIR="/opt/tak"
 CERT_DIR="${TAK_DIR}/certs/files"
@@ -1755,8 +1757,9 @@ if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
     if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
         ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${RTSP_PORT}"    proto tcp comment "MediaMTX RTSP (VPN)"
         ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${RTSP_PORT}"    proto udp comment "MediaMTX RTSP/UDP (VPN)"
-        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${HLS_PORT}"     proto tcp comment "MediaMTX HLS (VPN)"
-        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${WEBRTC_PORT}"  proto tcp comment "MediaMTX WebRTC (VPN)"
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${HLS_PORT}"          proto tcp comment "MediaMTX HLS (VPN)"
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${WEBRTC_PORT}"      proto tcp comment "MediaMTX WebRTC (VPN)"
+        ufw allow from "${OPENVPN_SUBNET}.0/24" to any port "${WEBRTC_ICE_PORT}"  proto udp comment "MediaMTX WebRTC ICE (VPN)"
     fi
 else
     # No VPN — all service ports open directly
@@ -1769,8 +1772,9 @@ else
     if [[ -z "${SKIP_MEDIAMTX:-}" ]]; then
         ufw allow "${RTSP_PORT}/tcp"   comment "MediaMTX RTSP"
         ufw allow "${RTSP_PORT}/udp"   comment "MediaMTX RTSP/UDP"
-        ufw allow "${HLS_PORT}/tcp"    comment "MediaMTX HLS"
-        ufw allow "${WEBRTC_PORT}/tcp" comment "MediaMTX WebRTC"
+        ufw allow "${HLS_PORT}/tcp"         comment "MediaMTX HLS"
+        ufw allow "${WEBRTC_PORT}/tcp"      comment "MediaMTX WebRTC"
+        ufw allow "${WEBRTC_ICE_PORT}/udp"  comment "MediaMTX WebRTC ICE"
     fi
     ufw allow "${TAKADMIN_PORT}/tcp"   comment "RagTAK Admin Panel"
 fi
