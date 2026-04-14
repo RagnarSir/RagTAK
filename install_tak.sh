@@ -616,7 +616,7 @@ done
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
 FF_PROFILE="$(find "${REAL_HOME}/.mozilla/firefox" "${REAL_HOME}/.config/mozilla/firefox" \
-    -maxdepth 2 -name "cert9.db" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)"
+    -maxdepth 2 -name "cert9.db" 2>/dev/null | head -1 | xargs -r dirname 2>/dev/null || true)"
 
 if [[ -n "$FF_PROFILE" ]]; then
     info "Importing certificates into Firefox profile: $FF_PROFILE"
