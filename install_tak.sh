@@ -473,9 +473,23 @@ export PGPORT=5432
 
 # ─── 6. Install TAK Server .deb ──────────────────────────────────────────────
 info "Installing TAK Server..."
-dpkg -i "$TAK_DEB_PATH" || apt-get install -f -y
+# Skip dpkg -i if the exact version is already installed — re-running dpkg on an
+# already-installed TAK package causes the postinstall to wipe CoreConfig.xml.
+TAK_DEB_VERSION="$(dpkg-deb -f "$TAK_DEB_PATH" Version 2>/dev/null || true)"
+if dpkg -l takserver 2>/dev/null | awk '/^ii/{print $3}' | grep -qF "$TAK_DEB_VERSION"; then
+    info "TAK Server ${TAK_DEB_VERSION} already installed — skipping dpkg."
+else
+    dpkg -i "$TAK_DEB_PATH" || apt-get install -f -y
+fi
 [[ -d "$TAK_DIR" ]] || die "TAK Server installation failed — $TAK_DIR not found."
-[[ -f "${TAK_DIR}/CoreConfig.xml" ]] || die "TAK Server install incomplete — CoreConfig.xml missing."
+# CoreConfig.xml is created by the .deb postinstall; if missing (e.g. after a
+# failed prior run that re-ran dpkg), recreate it from the example.
+if [[ ! -f "${TAK_DIR}/CoreConfig.xml" ]]; then
+    [[ -f "${TAK_DIR}/CoreConfig.example.xml" ]] || \
+        die "TAK Server install incomplete — CoreConfig.xml and CoreConfig.example.xml both missing."
+    cp "${TAK_DIR}/CoreConfig.example.xml" "${TAK_DIR}/CoreConfig.xml"
+    info "CoreConfig.xml recreated from example."
+fi
 id tak &>/dev/null || die "TAK Server install incomplete — 'tak' user not created by .deb."
 success "TAK Server installed to $TAK_DIR"
 
