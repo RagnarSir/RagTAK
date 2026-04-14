@@ -742,6 +742,10 @@ rtspAddress: :8554
 rtmpAddress: :1935
 hlsAddress: :8888
 webrtcAddress: :8889
+# Use standard MPEG-TS segments — avoids the default LL-HLS muxer stalling
+# when clients connect before enough partial segments have accumulated.
+hlsVariant: mpegts
+hlsSegmentDuration: 2s
 api: yes
 apiAddress: 127.0.0.1:9997
 readTimeout: 10s
