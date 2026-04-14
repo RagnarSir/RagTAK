@@ -877,6 +877,7 @@ apt-get install -y wireguard wireguard-tools qrencode
 sed -i 's/#*net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 sed -i 's/#*net.ipv6.conf.all.forwarding=.*/net.ipv6.conf.all.forwarding=1/' /etc/sysctl.conf
 sysctl -w net.ipv4.ip_forward=1 >/dev/null
+sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
 
 # Detect WAN interface — try default route first, fall back to first non-loopback interface
 WAN_IF="$(ip route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)"
@@ -942,6 +943,9 @@ EOF
         < "${CERT_OUT_DIR}/wg-${CLIENT}.conf" 2>/dev/null && \
         success "  WireGuard config + QR: ${CERT_OUT_DIR}/wg-${CLIENT}.conf"
 done
+
+# Lock down client configs — they contain private keys
+chmod 600 "${CERT_OUT_DIR}"/wg-*.conf 2>/dev/null || true
 
 # Write and lock down server config
 echo "$WG_SERVER_CONF" > /etc/wireguard/wg0.conf
