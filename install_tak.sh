@@ -1178,6 +1178,39 @@ def create_user():
     return redirect(url_for('users'))
 
 
+_PROTECTED_USERS = {'takserver', 'tak-admin', 'root-ca', 'truststore-root'}
+
+@app.route('/users/delete', methods=['POST'])
+@login_required
+def delete_user():
+    name = request.form.get('username', '').strip()
+    if not name or not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', name):
+        flash('Invalid username.', 'error')
+        return redirect(url_for('users'))
+    if name in _PROTECTED_USERS:
+        flash(f'Cannot delete protected user "{name}".', 'error')
+        return redirect(url_for('users'))
+
+    # Remove from TAK Server (non-fatal)
+    run('java', '-jar', f'{TAK_DIR}/utils/UserManager.jar', 'usermod', '-D', name)
+
+    # Delete cert files from both directories
+    deleted = []
+    for d in [Path(CERT_DIR), Path(CERT_OUT_DIR)]:
+        for f in d.glob(f'{name}.*'):
+            try:
+                f.unlink()
+                deleted.append(f.name)
+            except OSError:
+                pass
+
+    if deleted:
+        flash(f'User "{name}" deleted.', 'success')
+    else:
+        flash(f'User "{name}" not found.', 'error')
+    return redirect(url_for('users'))
+
+
 # ── Downloads ─────────────────────────────────────────────────────────────────
 
 @app.route('/downloads')
@@ -1685,6 +1718,7 @@ T_USERS = page('''
       <th>Name</th>
       <th>TAK Certificate</th>
       <th>ATAK Bundle</th>
+      <th></th>
     </tr></thead>
     <tbody>
     {% for u in users %}
@@ -1692,6 +1726,13 @@ T_USERS = page('''
         <td>{{ u }}</td>
         <td><a href="/download/file/{{ u }}.p12" download>&#8659; {{ u }}.p12</a></td>
         <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; ATAK bundle</a></td>
+        <td>
+          <form method="post" action="/users/delete" style="margin:0"
+                onsubmit="return confirm(&quot;Delete user {{ u }}? This cannot be undone.&quot;)">
+            <input type="hidden" name="username" value="{{ u }}">
+            <button type="submit" class="btn btn-danger" style="padding:.3rem .7rem;font-size:.8rem">Delete</button>
+          </form>
+        </td>
       </tr>
     {% endfor %}
     </tbody>
