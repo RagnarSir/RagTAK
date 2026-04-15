@@ -1231,17 +1231,20 @@ def dl_atak(username):
     buf = io.BytesIO()
     out = Path(CERT_OUT_DIR)
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-        for fn in ['truststore-root.p12', f'{username}.p12']:
+        for fn in ['truststore-root.p12', f'{username}.p12', f'{username}.ovpn']:
             p = out / fn
             if p.exists():
                 z.write(p, fn)
+        ovpn_line = (f'  OpenVPN    : {username}.ovpn  (import into OpenVPN Connect app)\n'
+                     if (out / f'{username}.ovpn').exists() else '')
         z.writestr('README.txt',
             f'TAK Device Bundle — {username}\n'
             f'==============================\n\n'
-            f'ATAK / WinTAK connection\n'
+            f'ATAK / iTAK / WinTAK connection\n'
             f'  Server     : ssl://{HOST}:8089\n'
             f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
-            f'  Client Cert: {username}.p12        (password: {CERT_PASS})\n')
+            f'  Client Cert: {username}.p12        (password: {CERT_PASS})\n'
+            + ovpn_line)
     buf.seek(0)
     return send_file(buf, mimetype='application/zip',
                      as_attachment=True, download_name=f'tak-atak-{username}.zip')
@@ -1296,17 +1299,20 @@ def share_download(token):
         buf = io.BytesIO()
         out = Path(CERT_OUT_DIR)
         with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            for fn in ['truststore-root.p12', f'{arg}.p12']:
+            for fn in ['truststore-root.p12', f'{arg}.p12', f'{arg}.ovpn']:
                 p = out / fn
                 if p.exists():
                     z.write(p, fn)
+            ovpn_line = (f'  OpenVPN    : {arg}.ovpn  (import into OpenVPN Connect app)\n'
+                         if (out / f'{arg}.ovpn').exists() else '')
             z.writestr('README.txt',
                 f'TAK Device Bundle - {arg}\n'
                 f'==============================\n\n'
-                f'ATAK / WinTAK connection\n'
+                f'ATAK / iTAK / WinTAK connection\n'
                 f'  Server     : ssl://{HOST}:8089\n'
                 f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
-                f'  Client Cert: {arg}.p12             (password: {CERT_PASS})\n')
+                f'  Client Cert: {arg}.p12             (password: {CERT_PASS})\n'
+                + ovpn_line)
         buf.seek(0)
         return send_file(buf, mimetype='application/zip',
                          as_attachment=True, download_name=f'tak-atak-{arg}.zip')
