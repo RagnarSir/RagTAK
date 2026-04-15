@@ -964,11 +964,15 @@ apt-get install -y python3-flask 2>/dev/null || \
     pip3 install flask 2>/dev/null || \
     die "Flask install failed — cannot set up admin panel"
 
+pip3 install "qrcode[pure]" --break-system-packages -q 2>/dev/null || \
+    pip3 install qrcode --break-system-packages -q 2>/dev/null || \
+    true  # non-fatal: QR feature degrades gracefully without it
+
 cat > "${TAKADMIN_DIR}/takadmin.py" << 'PYEOF'
 #!/usr/bin/env python3
 """RagTAK Admin Panel — unified management for TAK Server and companion services."""
 
-import io, os, re, secrets, shutil, subprocess, zipfile
+import io, os, re, secrets, shutil, subprocess, threading, time, zipfile
 from functools import wraps
 from pathlib import Path
 from flask import (Flask, flash, jsonify, redirect, render_template_string,
@@ -1054,6 +1058,22 @@ def login_required(f):
             return redirect(url_for('login'))
         return f(*a, **kw)
     return g
+
+
+# ── Share tokens (QR cert transfer) ─────────────────────────────────────────
+
+_share_tokens: dict = {}   # token -> {'type': str, 'arg': str, 'exp': float}
+_share_lock = threading.Lock()
+
+def _purge_expired():
+    while True:
+        time.sleep(60)
+        now = time.time()
+        with _share_lock:
+            for k in [k for k, v in _share_tokens.items() if v['exp'] < now]:
+                del _share_tokens[k]
+
+threading.Thread(target=_purge_expired, daemon=True).start()
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -1162,9 +1182,10 @@ def create_user():
 @app.route('/downloads')
 @login_required
 def downloads():
-    out = Path(CERT_OUT_DIR)
-    p12s = sorted(p.name for p in out.glob('*.p12')) if out.exists() else []
-    return render_template_string(T_DL, p12s=p12s, cert_pass=CERT_PASS)
+    out   = Path(CERT_OUT_DIR)
+    p12s  = sorted(p.name for p in out.glob('*.p12'))  if out.exists() else []
+    ovpns = sorted(p.name for p in out.glob('*.ovpn')) if out.exists() else []
+    return render_template_string(T_DL, p12s=p12s, ovpns=ovpns, cert_pass=CERT_PASS)
 
 
 @app.route('/download/file/<filename>')
@@ -1223,6 +1244,78 @@ def dl_atak(username):
     buf.seek(0)
     return send_file(buf, mimetype='application/zip',
                      as_attachment=True, download_name=f'tak-atak-{username}.zip')
+
+
+@app.route('/share/create', methods=['POST'])
+@login_required
+def share_create():
+    share_type = request.form.get('type', '')
+    arg        = request.form.get('arg', '')
+    if share_type == 'atak':
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', arg):
+            return jsonify(error='Invalid username'), 400
+    elif share_type == 'file':
+        out    = Path(CERT_OUT_DIR).resolve()
+        target = (out / arg).resolve()
+        if not str(target).startswith(str(out)) or not target.exists():
+            return jsonify(error='File not found'), 404
+    else:
+        return jsonify(error='Unknown type'), 400
+    token = secrets.token_urlsafe(32)
+    with _share_lock:
+        _share_tokens[token] = {'type': share_type, 'arg': arg, 'exp': time.time() + 900}
+    share_url = request.host_url.rstrip('/') + f'/share/{token}'
+    try:
+        import qrcode, qrcode.image.svg
+        qr  = qrcode.make(share_url, image_factory=qrcode.image.svg.SvgPathImage,
+                          box_size=8, border=2)
+        buf = io.BytesIO()
+        qr.save(buf)
+        svg = buf.getvalue().decode('utf-8')
+        if svg.startswith('<?xml'):
+            svg = svg[svg.index('<svg'):]
+    except ImportError:
+        svg = None
+    return jsonify(url=share_url, svg=svg)
+
+
+@app.route('/share/<token>')
+def share_download(token):
+    with _share_lock:
+        entry = _share_tokens.get(token)
+        if not entry or entry['exp'] < time.time():
+            _share_tokens.pop(token, None)
+            return 'Link expired or already used.', 410
+        del _share_tokens[token]
+    share_type = entry['type']
+    arg        = entry['arg']
+    if share_type == 'atak':
+        if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', arg):
+            return 'Invalid', 400
+        buf = io.BytesIO()
+        out = Path(CERT_OUT_DIR)
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for fn in ['truststore-root.p12', f'{arg}.p12']:
+                p = out / fn
+                if p.exists():
+                    z.write(p, fn)
+            z.writestr('README.txt',
+                f'TAK Device Bundle - {arg}\n'
+                f'==============================\n\n'
+                f'ATAK / WinTAK connection\n'
+                f'  Server     : ssl://{HOST}:8089\n'
+                f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
+                f'  Client Cert: {arg}.p12             (password: {CERT_PASS})\n')
+        buf.seek(0)
+        return send_file(buf, mimetype='application/zip',
+                         as_attachment=True, download_name=f'tak-atak-{arg}.zip')
+    elif share_type == 'file':
+        out    = Path(CERT_OUT_DIR).resolve()
+        target = (out / arg).resolve()
+        if not str(target).startswith(str(out)) or not target.exists():
+            return 'Not found', 404
+        return send_file(target, as_attachment=True)
+    return 'Invalid token type', 400
 
 
 # ── Templates ─────────────────────────────────────────────────────────────────
@@ -1416,6 +1509,25 @@ _BASE = '''<!doctype html>
 
     p { color: var(--muted); font-size: .875rem; margin-bottom: .75rem; }
     small { font-size: .78rem; color: var(--muted); }
+
+    /* ── QR Modal ── */
+    .modal-bg { display:none; position:fixed; inset:0; background:rgba(0,0,0,.72);
+                z-index:500; align-items:center; justify-content:center; }
+    .modal-bg.open { display:flex; }
+    .modal-box { background:var(--surface); border:1px solid var(--border2);
+                 border-radius:var(--radius); padding:1.5rem; max-width:360px;
+                 width:90%; box-shadow:0 12px 40px rgba(0,0,0,.6);
+                 display:flex; flex-direction:column; align-items:center; gap:1rem; }
+    .modal-title { font-size:.875rem; font-weight:600; color:var(--text); text-align:center; }
+    .modal-qr { background:#fff; padding:10px; border-radius:6px; line-height:0; }
+    .modal-qr svg { width:200px; height:200px; }
+    .modal-url { font-size:.72rem; color:var(--muted); word-break:break-all; text-align:center; }
+    .modal-note { font-size:.75rem; color:#c9971c; background:rgba(201,151,28,.1);
+                  border:1px solid #7a5a10; border-radius:6px;
+                  padding:.5rem .75rem; width:100%; box-sizing:border-box; text-align:center; }
+    .modal-close { align-self:flex-end; background:none; border:none; color:var(--muted);
+                   cursor:pointer; font-size:1.1rem; padding:.2rem .4rem; border-radius:4px; }
+    .modal-close:hover { color:var(--text); background:var(--surface2); }
   </style>
 </head>
 <body>
@@ -1611,12 +1723,31 @@ T_DL = page('''
   </table>
 </div>
 
+{% if ovpns %}
+<div class="section-title">OpenVPN Configs &nbsp;<small style="text-transform:none;font-weight:400">import into OpenVPN Connect app</small></div>
+<div class="card" style="margin-bottom:1.5rem">
+  <table>
+    <thead><tr><th>File</th><th>Download</th><th>Mobile QR</th></tr></thead>
+    <tbody>
+    {% for fn in ovpns %}
+      <tr>
+        <td><code>{{ fn }}</code></td>
+        <td><a href="/download/file/{{ fn }}" download>&#8659; Download</a></td>
+        <td><button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
+                    onclick="showQr(&quot;file&quot;,&quot;{{ fn }}&quot;)">&#9636; QR</button></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
 <div class="section-title">Device Bundles</div>
 <div class="card">
   <div class="card-header">TAK certificate bundles per device</div>
   <table>
     <thead><tr>
-      <th>User</th><th>ATAK Bundle (cert + README)</th>
+      <th>User</th><th>ATAK Bundle (cert + README)</th><th>Mobile QR</th>
     </tr></thead>
     <tbody>
     {% for fn in p12s %}
@@ -1625,12 +1756,67 @@ T_DL = page('''
       <tr>
         <td>{{ u }}</td>
         <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; tak-atak-{{ u }}.zip</a></td>
+        <td><button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
+                    onclick="showQr(&quot;atak&quot;,&quot;{{ u }}&quot;)">&#9636; QR</button></td>
       </tr>
       {% endif %}
     {% endfor %}
     </tbody>
   </table>
 </div>
+
+<div class="modal-bg" id="qrModal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeQr()">&#10005;</button>
+    <div class="modal-title">Scan to download on mobile</div>
+    <div class="modal-qr" id="qrSvg" style="color:#888;font-size:.85rem;padding:1rem">Generating...</div>
+    <div class="modal-url" id="qrUrl"></div>
+    <div class="modal-note" id="qrNote"></div>
+  </div>
+</div>
+<script>
+function showQr(type, arg) {
+  var modal = document.getElementById("qrModal");
+  var svgEl = document.getElementById("qrSvg");
+  var urlEl = document.getElementById("qrUrl");
+  var note  = document.getElementById("qrNote");
+  svgEl.innerHTML = "Generating...";
+  svgEl.style.padding = "1rem";
+  urlEl.textContent = "";
+  note.textContent = "";
+  modal.classList.add("open");
+  var fd = new FormData();
+  fd.append("type", type);
+  fd.append("arg",  arg);
+  fetch("/share/create", {method:"POST", body:fd})
+    .then(function(r){ return r.json(); })
+    .then(function(data) {
+      if (data.error) {
+        svgEl.innerHTML = data.error;
+        return;
+      }
+      if (data.svg) {
+        svgEl.innerHTML = data.svg;
+        svgEl.style.padding = "10px";
+      } else {
+        svgEl.innerHTML = "Install qrcode on server to enable QR.";
+      }
+      urlEl.textContent = data.url;
+      if (type === "file") {
+        note.textContent = "Link valid 15 min, single use. In VPN mode: connect OpenVPN on the phone first, then scan.";
+      } else {
+        note.textContent = "Link valid 15 min, single use. In VPN mode: connect OpenVPN first, then scan.";
+      }
+    })
+    .catch(function() { svgEl.innerHTML = "Request failed."; });
+}
+function closeQr() {
+  document.getElementById("qrModal").classList.remove("open");
+}
+document.getElementById("qrModal").addEventListener("click", function(e) {
+  if (e.target === this) { closeQr(); }
+});
+</script>
 ''')
 
 

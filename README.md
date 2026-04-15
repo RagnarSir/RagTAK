@@ -240,6 +240,14 @@ Each device needs its own client certificate. The script generates five: `client
 
 > **Tip:** The RagTak Admin Panel has a **Downloads** page where you can grab a per-user ATAK bundle (cert + README) in one zip.
 
+> **QR code transfer (no USB):** The Downloads page has a **QR button** next to each ATAK
+> bundle and `.ovpn` file. Click it on your desktop — a 15-minute single-use QR code appears.
+> Scan with your phone camera to download directly. No USB required.
+>
+> **OpenVPN mode:** The phone must be connected to the VPN before scanning (admin panel is
+> only reachable at `10.8.0.1:8080`). For a brand-new device, transfer its `.ovpn` file once
+> via USB or messaging app, connect VPN, then use QR for all future cert downloads.
+
 ---
 
 ## Connecting via OpenVPN
