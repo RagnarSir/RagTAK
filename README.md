@@ -213,9 +213,11 @@ Firefox will ask which certificate to use — select `tak-admin`.
 
 ---
 
-## Connecting ATAK (Android)
+## Connecting ATAK (Android) and iTAK (iOS)
 
 Each device needs its own client certificate. The script generates five: `client1.p12` through `client5.p12`. Use one per device — do not share the same `.p12` between two devices.
+
+The same certificates and connection steps work for both ATAK (Android) and iTAK (iOS) — the apps use the same `.p12` format and connect to the same server on port 8089.
 
 ### Without Let's Encrypt
 
