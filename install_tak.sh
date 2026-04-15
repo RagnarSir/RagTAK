@@ -964,7 +964,8 @@ apt-get install -y python3-flask 2>/dev/null || \
     pip3 install flask 2>/dev/null || \
     die "Flask install failed — cannot set up admin panel"
 
-pip3 install "qrcode[pure]" --break-system-packages -q 2>/dev/null || \
+apt-get install -y python3-qrcode -q 2>/dev/null || \
+    pip3 install "qrcode[pure]" --break-system-packages -q 2>/dev/null || \
     pip3 install qrcode --break-system-packages -q 2>/dev/null || \
     true  # non-fatal: QR feature degrades gracefully without it
 

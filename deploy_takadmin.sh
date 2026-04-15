@@ -12,7 +12,8 @@ echo "==> Pulling latest changes..."
 git -C "$SCRIPT_DIR" pull
 
 echo "==> Installing qrcode library..."
-pip3 install "qrcode[pure]" --break-system-packages -q 2>/dev/null || \
+apt-get install -y python3-qrcode -q 2>/dev/null || \
+    pip3 install "qrcode[pure]" --break-system-packages -q 2>/dev/null || \
     pip3 install qrcode --break-system-packages -q 2>/dev/null || \
     echo "    WARNING: qrcode install failed — QR buttons will show URL only (no image)"
 
