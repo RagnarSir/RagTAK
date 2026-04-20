@@ -4,7 +4,7 @@
 #  Version   : 2.0
 #  Target OS : Ubuntu 22.04 / 24.04, Debian 11/12, Linux Mint 21+
 #  Installs  : TAK Server 5.7, PostgreSQL 15, Full PKI, MediaMTX, Mumble,
-#              Node-RED, RagTAK Admin Panel, OpenVPN (optional), UFW firewall
+#              Node-RED, RagTAK Admin Panel, OpenVPN (default on), UFW firewall
 #
 # =============================================================================
 #  OVERVIEW
@@ -21,12 +21,14 @@
 #    - Mumble voice communication server
 #    - Node-RED flow automation (dedicated user, port 1880)
 #    - RagTAK Admin Panel (Flask web UI -- service control, user/cert creation)
-#    - OpenVPN (optional -- locks all services behind VPN tunnel for security)
+#    - OpenVPN (default on -- locks all services behind VPN tunnel for security;
+#      pass --no-openvpn to skip)
 #    - UFW firewall configuration
 #
-#  When OpenVPN is chosen, only SSH (22) and OpenVPN (1194/UDP) are exposed to
-#  the internet. All other services are VPN-only (reachable at 10.8.0.1).
-#  Inline .ovpn configs for each user are generated automatically in certs/.
+#  With OpenVPN enabled (the default), only SSH (22) and OpenVPN (1194/UDP) are
+#  exposed to the internet. All other services are VPN-only (reachable at
+#  10.8.0.1). Inline .ovpn configs for each user are generated automatically
+#  in certs/.
 #
 # =============================================================================
 #  STEP 1 -- DOWNLOAD THE TAK SERVER PACKAGE
@@ -53,7 +55,7 @@
 #    The script configures UFW automatically, but the provider firewall is
 #    separate -- both must allow traffic.
 #
-#    WITHOUT OpenVPN (all services public):
+#    WITHOUT OpenVPN (--no-openvpn -- all services public):
 #      Port 22    / TCP  -- SSH
 #      Port 8089  / TCP  -- ATAK / WinTAK / iTAK (CoT over SSL)
 #      Port 8443  / TCP  -- TAK web admin interface
@@ -68,7 +70,7 @@
 #      Port 1880  / TCP  -- Node-RED web UI
 #      Port 8080  / TCP  -- RagTAK Admin Panel
 #
-#    WITH OpenVPN (recommended for VPS -- all services behind VPN):
+#    WITH OpenVPN (default -- all services behind VPN):
 #      Port 22   / TCP  -- SSH
 #      Port 1194 / UDP  -- OpenVPN
 #      (All other ports are blocked from the internet; reachable via VPN only)
@@ -77,17 +79,19 @@
 #  STEP 3 -- RUN THE SCRIPT
 # =============================================================================
 #
-#    Basic (prompts for OpenVPN choice at runtime):
+#    Default (installs OpenVPN; services are VPN-only):
 #      sudo bash install_tak.sh
+#
+#    Skip OpenVPN (all services exposed directly):
+#      sudo bash install_tak.sh --no-openvpn
 #
 #    With Let's Encrypt TLS (recommended for public-facing installs):
 #      sudo DOMAIN=tak.example.com bash install_tak.sh
 #
-#    Non-interactive with OpenVPN:
-#      sudo DOMAIN=tak.example.com INSTALL_OPENVPN=yes bash install_tak.sh
+#    Skip OpenVPN + Let's Encrypt:
+#      sudo DOMAIN=tak.example.com bash install_tak.sh --no-openvpn
 #
-#    Non-interactive without OpenVPN:
-#      sudo DOMAIN=tak.example.com INSTALL_OPENVPN=no bash install_tak.sh
+#    See --help for all CLI options.
 #
 #  The script takes approximately 5-10 minutes to complete.
 #  Do NOT interrupt it once started.
@@ -288,6 +292,33 @@ success() { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
+# ─── CLI flags ───────────────────────────────────────────────────────────────
+# OpenVPN is installed by default; pass --no-openvpn to skip it.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --openvpn)       INSTALL_OPENVPN=yes ;;
+        --no-openvpn)    INSTALL_OPENVPN=no  ;;
+        -h|--help)
+            cat << 'HELP'
+Usage: sudo bash install_tak.sh [options]
+
+Options:
+  --openvpn         Install OpenVPN (default — listed for clarity).
+  --no-openvpn      Skip OpenVPN installation.
+  -h, --help        Show this help and exit.
+
+Environment variables (see README for the full list):
+  DOMAIN=…          Enable Let's Encrypt for this domain.
+  LE_EMAIL=…        Contact email for Let's Encrypt.
+  PUBLIC_IP=…       Override auto-detected public IP.
+  INSTALL_OPENVPN=yes|no   Override OpenVPN default (flags take precedence).
+HELP
+            exit 0 ;;
+        *)  die "Unknown argument: $1 (try --help)" ;;
+    esac
+    shift
+done
+
 # ─── Configuration ───────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -335,7 +366,7 @@ NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
 TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
 
-# OpenVPN (set INSTALL_OPENVPN=yes/no to skip the interactive prompt)
+# OpenVPN (installed by default; use --no-openvpn or INSTALL_OPENVPN=no to skip)
 OPENVPN_PORT="${OPENVPN_PORT:-1194}"
 OPENVPN_PROTO="${OPENVPN_PROTO:-udp}"
 OPENVPN_SUBNET="${OPENVPN_SUBNET:-10.8.0}"  # /24 — server gets .1, clients get .2+
@@ -395,16 +426,13 @@ PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
     || hostname -I | awk '{print $1}')"
 [[ -n "$PUBLIC_IP" ]] || die "Could not determine public IP. Set it manually: PUBLIC_IP=x.x.x.x sudo bash $0"
 
-# Ask about OpenVPN unless pre-answered via env var
-if [[ -z "${INSTALL_OPENVPN:-}" ]]; then
-    echo ""
-    echo "  OpenVPN provides an extra security layer: all services (TAK, Mumble,"
-    echo "  Node-RED, admin panel) are only reachable through the VPN tunnel."
-    echo "  Clients (ATAK, iTAK, WinTAK) use the OpenVPN Connect app to connect first."
-    echo ""
-    read -rp "  Install OpenVPN? [y/N] " _ovpn_ans
-    [[ "$_ovpn_ans" =~ ^[Yy]$ ]] && INSTALL_OPENVPN=yes || INSTALL_OPENVPN=no
-    echo ""
+# OpenVPN is installed by default; the --no-openvpn flag or INSTALL_OPENVPN=no
+# env var opts out.
+INSTALL_OPENVPN="${INSTALL_OPENVPN:-yes}"
+if [[ "$INSTALL_OPENVPN" == "yes" ]]; then
+    info "OpenVPN will be installed (pass --no-openvpn to skip)."
+else
+    info "OpenVPN will be skipped (--no-openvpn / INSTALL_OPENVPN=no)."
 fi
 
 ARCH="$(uname -m)"
