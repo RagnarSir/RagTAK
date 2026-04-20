@@ -299,10 +299,10 @@ while [[ $# -gt 0 ]]; do
         --openvpn)       INSTALL_OPENVPN=yes ;;
         --no-openvpn)    INSTALL_OPENVPN=no  ;;
         --use-ldap)
-            [[ $# -ge 3 ]] || die "--use-ldap requires two arguments: <ldap-url> <dn-template>\n  Example: --use-ldap ldap://10.8.0.2:389 \"uid={username},ou=users,dc=example,dc=com\""
+            [[ $# -ge 3 ]] || die "--use-ldap requires two arguments: <ldap-url> <base-dn>\n  Example: --use-ldap ldap://10.8.0.2:389 \"dc=example,dc=com\""
             USE_LDAP=yes
             LDAP_URL="$2"
-            LDAP_USER_DN="$3"
+            LDAP_BASE_DN="$3"
             shift 2
             ;;
         -h|--help)
@@ -312,19 +312,20 @@ Usage: sudo bash install_tak.sh [options]
 Options:
   --openvpn                Install OpenVPN (default — listed for clarity).
   --no-openvpn             Skip OpenVPN installation.
-  --use-ldap <url> <dn>    Enable OpenLDAP authentication for the admin panel.
-                           Example:
-                             --use-ldap ldap://10.8.0.2:389 "uid={username},ou=users,dc=hjv,dc=dk"
-  -h, --help               Show this help and exit.
+  --use-ldap <url> <base-dn>   Enable OpenLDAP authentication for the admin panel.
+                               Login builds: uid=<username>,ou=users,<base-dn>
+                               Example:
+                                 --use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"
+  -h, --help                   Show this help and exit.
 
 Environment variables (see README for the full list):
   DOMAIN=…                Enable Let's Encrypt for this domain.
   LE_EMAIL=…              Contact email for Let's Encrypt.
   PUBLIC_IP=…             Override auto-detected public IP.
   INSTALL_OPENVPN=yes|no  Override OpenVPN default (flags take precedence).
-  USE_LDAP=yes            Enable LDAP auth (set LDAP_URL and LDAP_USER_DN too).
+  USE_LDAP=yes            Enable LDAP auth (set LDAP_URL and LDAP_BASE_DN too).
   LDAP_URL=…              LDAP server URL, e.g. ldap://10.8.0.2:389
-  LDAP_USER_DN=…          DN template, e.g. uid={username},ou=users,dc=hjv,dc=dk
+  LDAP_BASE_DN=…          Base DN, e.g. dc=hjv,dc=dk
 HELP
             exit 0 ;;
         *)  die "Unknown argument: $1 (try --help)" ;;
@@ -382,7 +383,7 @@ TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
 # OpenLDAP authentication for admin panel (use --use-ldap <url> <dn> to enable)
 USE_LDAP="${USE_LDAP:-no}"
 LDAP_URL="${LDAP_URL:-}"
-LDAP_USER_DN="${LDAP_USER_DN:-}"
+LDAP_BASE_DN="${LDAP_BASE_DN:-}"
 
 # OpenVPN (installed by default; use --no-openvpn or INSTALL_OPENVPN=no to skip)
 OPENVPN_PORT="${OPENVPN_PORT:-1194}"
@@ -413,8 +414,8 @@ command -v apt-get &>/dev/null || die "Requires a Debian/Ubuntu-based system."
 
 if [[ "$USE_LDAP" == "yes" ]]; then
     [[ -n "$LDAP_URL" ]]     || die "--use-ldap: LDAP_URL is required (e.g. ldap://10.8.0.2:389)"
-    [[ -n "$LDAP_USER_DN" ]] || die "--use-ldap: LDAP_USER_DN is required (e.g. uid={username},ou=users,dc=example,dc=com)"
-    info "LDAP auth enabled: ${LDAP_URL}  DN template: ${LDAP_USER_DN}"
+    [[ -n "$LDAP_BASE_DN" ]] || die "--use-ldap: base DN is required (e.g. dc=example,dc=com)"
+    info "LDAP auth enabled: ${LDAP_URL}  base DN: ${LDAP_BASE_DN}  (binds as uid=<user>,ou=users,${LDAP_BASE_DN})"
 fi
 
 # Warn on non-LTS Ubuntu — TAK Server is only validated against LTS releases
@@ -1066,7 +1067,7 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 ADMIN_USER   = os.environ.get('TAKADMIN_USER', 'Admin')
 ADMIN_PASS   = os.environ.get('TAKADMIN_PASS', 'changeme')
 LDAP_URL     = os.environ.get('LDAP_URL', '')
-LDAP_USER_DN = os.environ.get('LDAP_USER_DN', '')
+LDAP_BASE_DN = os.environ.get('LDAP_BASE_DN', '')
 TAK_DIR      = '/opt/tak'
 CERT_DIR     = f'{TAK_DIR}/certs/files'
 CERTS_SCRIPT = f'{TAK_DIR}/certs'
@@ -1147,10 +1148,10 @@ def login_required(f):
 
 
 def ldap_authenticate(username, password):
-    if not _ldap3_available or not LDAP_URL or not LDAP_USER_DN:
+    if not _ldap3_available or not LDAP_URL or not LDAP_BASE_DN:
         return False
     try:
-        user_dn = LDAP_USER_DN.replace('{username}', username)
+        user_dn = f'uid={username},ou=users,{LDAP_BASE_DN}'
         server = LdapServer(LDAP_URL, get_info=None, connect_timeout=5)
         conn = LdapConnection(server, user=user_dn, password=password, auto_bind=False)
         return conn.bind()
@@ -2008,7 +2009,7 @@ Environment=CITY=${CITY:-NA}
 Environment=ORGANIZATION=${ORGANIZATION:-RagTAK}
 Environment=ORGANIZATIONAL_UNIT=${ORGANIZATIONAL_UNIT:-TAK}
 Environment=LDAP_URL=${LDAP_URL}
-Environment=LDAP_USER_DN=${LDAP_USER_DN}
+Environment=LDAP_BASE_DN=${LDAP_BASE_DN}
 
 [Install]
 WantedBy=multi-user.target
