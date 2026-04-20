@@ -313,7 +313,7 @@ Options:
   --openvpn                Install OpenVPN (default — listed for clarity).
   --no-openvpn             Skip OpenVPN installation.
   --use-ldap <url> <base-dn>   Enable OpenLDAP authentication for the admin panel.
-                               Login builds: uid=<username>,ou=users,<base-dn>
+                               Login builds: uid=<username>,ou=people,<base-dn>
                                Example:
                                  --use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"
   -h, --help                   Show this help and exit.
@@ -415,7 +415,7 @@ command -v apt-get &>/dev/null || die "Requires a Debian/Ubuntu-based system."
 if [[ "$USE_LDAP" == "yes" ]]; then
     [[ -n "$LDAP_URL" ]]     || die "--use-ldap: LDAP_URL is required (e.g. ldap://10.8.0.2:389)"
     [[ -n "$LDAP_BASE_DN" ]] || die "--use-ldap: base DN is required (e.g. dc=example,dc=com)"
-    info "LDAP auth enabled: ${LDAP_URL}  base DN: ${LDAP_BASE_DN}  (binds as uid=<user>,ou=users,${LDAP_BASE_DN})"
+    info "LDAP auth enabled: ${LDAP_URL}  base DN: ${LDAP_BASE_DN}  (binds as uid=<user>,ou=people,${LDAP_BASE_DN})"
 fi
 
 # Warn on non-LTS Ubuntu — TAK Server is only validated against LTS releases
@@ -1151,7 +1151,7 @@ def ldap_authenticate(username, password):
     if not _ldap3_available or not LDAP_URL or not LDAP_BASE_DN:
         return False
     try:
-        user_dn = f'uid={username},ou=users,{LDAP_BASE_DN}'
+        user_dn = f'uid={username},ou=people,{LDAP_BASE_DN}'
         server = LdapServer(LDAP_URL, get_info=None, connect_timeout=5)
         conn = LdapConnection(server, user=user_dn, password=password, auto_bind=False)
         return conn.bind()
