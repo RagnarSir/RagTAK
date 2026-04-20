@@ -4,7 +4,7 @@
 #  Version   : 2.0
 #  Target OS : Ubuntu 22.04 / 24.04, Debian 11/12, Linux Mint 21+
 #  Installs  : TAK Server 5.7, PostgreSQL 15, Full PKI, MediaMTX, Mumble,
-#              Node-RED, RagTAK Admin Panel, OpenVPN (optional), UFW firewall
+#              Node-RED, RagTAK Admin Panel, OpenVPN (default on), UFW firewall
 #
 # =============================================================================
 #  OVERVIEW
@@ -21,12 +21,14 @@
 #    - Mumble voice communication server
 #    - Node-RED flow automation (dedicated user, port 1880)
 #    - RagTAK Admin Panel (Flask web UI -- service control, user/cert creation)
-#    - OpenVPN (optional -- locks all services behind VPN tunnel for security)
+#    - OpenVPN (default on -- locks all services behind VPN tunnel for security;
+#      pass --no-openvpn to skip)
 #    - UFW firewall configuration
 #
-#  When OpenVPN is chosen, only SSH (22) and OpenVPN (1194/UDP) are exposed to
-#  the internet. All other services are VPN-only (reachable at 10.8.0.1).
-#  Inline .ovpn configs for each user are generated automatically in certs/.
+#  With OpenVPN enabled (the default), only SSH (22) and OpenVPN (1194/UDP) are
+#  exposed to the internet. All other services are VPN-only (reachable at
+#  10.8.0.1). Inline .ovpn configs for each user are generated automatically
+#  in certs/.
 #
 # =============================================================================
 #  STEP 1 -- DOWNLOAD THE TAK SERVER PACKAGE
@@ -53,7 +55,7 @@
 #    The script configures UFW automatically, but the provider firewall is
 #    separate -- both must allow traffic.
 #
-#    WITHOUT OpenVPN (all services public):
+#    WITHOUT OpenVPN (--no-openvpn -- all services public):
 #      Port 22    / TCP  -- SSH
 #      Port 8089  / TCP  -- ATAK / WinTAK / iTAK (CoT over SSL)
 #      Port 8443  / TCP  -- TAK web admin interface
@@ -68,7 +70,7 @@
 #      Port 1880  / TCP  -- Node-RED web UI
 #      Port 8080  / TCP  -- RagTAK Admin Panel
 #
-#    WITH OpenVPN (recommended for VPS -- all services behind VPN):
+#    WITH OpenVPN (default -- all services behind VPN):
 #      Port 22   / TCP  -- SSH
 #      Port 1194 / UDP  -- OpenVPN
 #      (All other ports are blocked from the internet; reachable via VPN only)
@@ -77,17 +79,19 @@
 #  STEP 3 -- RUN THE SCRIPT
 # =============================================================================
 #
-#    Basic (prompts for OpenVPN choice at runtime):
+#    Default (installs OpenVPN; services are VPN-only):
 #      sudo bash install_tak.sh
+#
+#    Skip OpenVPN (all services exposed directly):
+#      sudo bash install_tak.sh --no-openvpn
 #
 #    With Let's Encrypt TLS (recommended for public-facing installs):
 #      sudo DOMAIN=tak.example.com bash install_tak.sh
 #
-#    Non-interactive with OpenVPN:
-#      sudo DOMAIN=tak.example.com INSTALL_OPENVPN=yes bash install_tak.sh
+#    Skip OpenVPN + Let's Encrypt:
+#      sudo DOMAIN=tak.example.com bash install_tak.sh --no-openvpn
 #
-#    Non-interactive without OpenVPN:
-#      sudo DOMAIN=tak.example.com INSTALL_OPENVPN=no bash install_tak.sh
+#    See --help for all CLI options.
 #
 #  The script takes approximately 5-10 minutes to complete.
 #  Do NOT interrupt it once started.
@@ -288,6 +292,33 @@ success() { echo -e "${GREEN}[OK]${NC}    $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
 die()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
+# ─── CLI flags ───────────────────────────────────────────────────────────────
+# OpenVPN is installed by default; pass --no-openvpn to skip it.
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --openvpn)       INSTALL_OPENVPN=yes ;;
+        --no-openvpn)    INSTALL_OPENVPN=no  ;;
+        -h|--help)
+            cat << 'HELP'
+Usage: sudo bash install_tak.sh [options]
+
+Options:
+  --openvpn         Install OpenVPN (default — listed for clarity).
+  --no-openvpn      Skip OpenVPN installation.
+  -h, --help        Show this help and exit.
+
+Environment variables (see README for the full list):
+  DOMAIN=…          Enable Let's Encrypt for this domain.
+  LE_EMAIL=…        Contact email for Let's Encrypt.
+  PUBLIC_IP=…       Override auto-detected public IP.
+  INSTALL_OPENVPN=yes|no   Override OpenVPN default (flags take precedence).
+HELP
+            exit 0 ;;
+        *)  die "Unknown argument: $1 (try --help)" ;;
+    esac
+    shift
+done
+
 # ─── Configuration ───────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -335,7 +366,7 @@ NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
 TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
 
-# OpenVPN (set INSTALL_OPENVPN=yes/no to skip the interactive prompt)
+# OpenVPN (installed by default; use --no-openvpn or INSTALL_OPENVPN=no to skip)
 OPENVPN_PORT="${OPENVPN_PORT:-1194}"
 OPENVPN_PROTO="${OPENVPN_PROTO:-udp}"
 OPENVPN_SUBNET="${OPENVPN_SUBNET:-10.8.0}"  # /24 — server gets .1, clients get .2+
@@ -389,23 +420,39 @@ if grep -qi 'ubuntu' /etc/os-release 2>/dev/null; then
     fi
 fi
 
-# Resolve public IP once — used for endpoints and summary
-PUBLIC_IP="$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
-    || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
-    || hostname -I | awk '{print $1}')"
-[[ -n "$PUBLIC_IP" ]] || die "Could not determine public IP. Set it manually: PUBLIC_IP=x.x.x.x sudo bash $0"
-
-# Ask about OpenVPN unless pre-answered via env var
-if [[ -z "${INSTALL_OPENVPN:-}" ]]; then
-    echo ""
-    echo "  OpenVPN provides an extra security layer: all services (TAK, Mumble,"
-    echo "  Node-RED, admin panel) are only reachable through the VPN tunnel."
-    echo "  Clients (ATAK, iTAK, WinTAK) use the OpenVPN Connect app to connect first."
-    echo ""
-    read -rp "  Install OpenVPN? [y/N] " _ovpn_ans
-    [[ "$_ovpn_ans" =~ ^[Yy]$ ]] && INSTALL_OPENVPN=yes || INSTALL_OPENVPN=no
-    echo ""
+# OpenVPN is installed by default; the --no-openvpn flag or INSTALL_OPENVPN=no
+# env var opts out. Resolved before IP detection because it governs whether
+# we need the external WAN IP (for .ovpn remote endpoints) at all.
+INSTALL_OPENVPN="${INSTALL_OPENVPN:-yes}"
+if [[ "$INSTALL_OPENVPN" == "yes" ]]; then
+    info "OpenVPN will be installed (pass --no-openvpn to skip)."
+else
+    info "OpenVPN will be skipped (--no-openvpn / INSTALL_OPENVPN=no)."
 fi
+
+# Resolve server IP(s). MACHINE_IP is the primary interface address — what
+# clients on the same network dial. On a VPS this is usually also the public
+# IP (NIC-bound); on a LAN host it is the LAN address.
+MACHINE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+[[ -n "$MACHINE_IP" ]] || die "Could not determine machine IP from 'hostname -I'."
+
+# PUBLIC_IP (WAN IP) is only needed when OpenVPN is installed — it becomes the
+# 'remote' endpoint in generated .ovpn configs. Without OpenVPN, MACHINE_IP is
+# what gets surfaced in the summary and admin panel. A manual PUBLIC_IP= env
+# override still triggers the external lookup path.
+if [[ "$INSTALL_OPENVPN" == "yes" || -n "${PUBLIC_IP:-}" ]]; then
+    PUBLIC_IP="${PUBLIC_IP:-$(curl -fsSL --max-time 5 https://api.ipify.org 2>/dev/null \
+        || curl -fsSL --max-time 5 https://ifconfig.me 2>/dev/null \
+        || echo "$MACHINE_IP")}"
+else
+    PUBLIC_IP="$MACHINE_IP"
+fi
+[[ -n "$PUBLIC_IP" ]] || die "Could not determine server IP. Set it manually: PUBLIC_IP=x.x.x.x sudo bash $0"
+
+# SERVER_IP is what user-facing URLs (summary, admin panel) point at. DOMAIN
+# wins when set; otherwise fall back to MACHINE_IP so LAN installs print a
+# reachable address rather than a WAN IP clients cannot route to.
+SERVER_IP="${DOMAIN:-$MACHINE_IP}"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -988,12 +1035,14 @@ TAK_DIR      = '/opt/tak'
 CERT_DIR     = f'{TAK_DIR}/certs/files'
 CERTS_SCRIPT = f'{TAK_DIR}/certs'
 PUBLIC_IP    = os.environ.get('PUBLIC_IP', '')
+SERVER_IP    = os.environ.get('SERVER_IP', '')
 CERT_PASS    = os.environ.get('CERT_PASS', 'atakatak')
 CERT_OUT_DIR = os.environ.get('CERT_OUT_DIR', '/opt/tak/certs/files')
 DOMAIN       = os.environ.get('DOMAIN', '')
 VPN_IP       = os.environ.get('VPN_IP', '')
-# When OpenVPN is installed all services are VPN-only — use VPN IP for links
-HOST         = VPN_IP if os.environ.get('OPENVPN_INSTALLED') and VPN_IP else DOMAIN or PUBLIC_IP
+# When OpenVPN is installed all services are VPN-only — use VPN IP for links.
+# Otherwise use SERVER_IP (machine IP or domain), never the raw WAN IP.
+HOST         = VPN_IP if os.environ.get('OPENVPN_INSTALLED') and VPN_IP else SERVER_IP or DOMAIN or PUBLIC_IP
 
 SERVICES = [
     ('takserver',          'TAK Server'),
@@ -1892,6 +1941,7 @@ Environment=TAKADMIN_PASS=${TAKADMIN_PASS}
 Environment=CERT_PASS=${CERT_PASS}
 Environment=CERT_OUT_DIR=${CERT_OUT_DIR}
 Environment=PUBLIC_IP=${PUBLIC_IP}
+Environment=SERVER_IP=${SERVER_IP}
 Environment=DOMAIN=${DOMAIN}
 Environment=TAKADMIN_PORT=${TAKADMIN_PORT}
 Environment=BIND_HOST=0.0.0.0
@@ -2116,8 +2166,6 @@ if [[ -f "$ADMIN_PEM" ]]; then
 fi
 
 # ─── 18. Summary ──────────────────────────────────────────────────────────────
-HOST_IP="$(hostname -I | awk '{print $1}')"
-DISPLAY_HOST="${DOMAIN:-$PUBLIC_IP}"
 
 echo ""
 echo "============================================================"
@@ -2147,14 +2195,14 @@ echo "    Mumble     : ${OPENVPN_SUBNET}.1:${MUMBLE_PORT}"
 echo "    Node-RED   : http://${OPENVPN_SUBNET}.1:${NODERED_PORT}"
 echo "    RagTak     : http://${OPENVPN_SUBNET}.1:${TAKADMIN_PORT}"
 else
-echo "    Web Admin  : https://${DISPLAY_HOST}:${TAK_ADMIN_PORT}"
-echo "    CoT/ATAK   : ssl://${DISPLAY_HOST}:${TAK_COT_PORT}"
-echo "    Enrollment : https://${DISPLAY_HOST}:${TAK_ENROLL_PORT}"
+echo "    Web Admin  : https://${SERVER_IP}:${TAK_ADMIN_PORT}"
+echo "    CoT/ATAK   : ssl://${SERVER_IP}:${TAK_COT_PORT}"
+echo "    Enrollment : https://${SERVER_IP}:${TAK_ENROLL_PORT}"
 [[ -z "${SKIP_MEDIAMTX:-}" ]] && \
-echo "    RTSP Video : rtsp://${DISPLAY_HOST}:${RTSP_PORT}/<stream-name>"
-echo "    Mumble     : ${DISPLAY_HOST}:${MUMBLE_PORT}"
-echo "    Node-RED   : http://${DISPLAY_HOST}:${NODERED_PORT}"
-echo "    RagTak     : http://${DISPLAY_HOST}:${TAKADMIN_PORT}"
+echo "    RTSP Video : rtsp://${SERVER_IP}:${RTSP_PORT}/<stream-name>"
+echo "    Mumble     : ${SERVER_IP}:${MUMBLE_PORT}"
+echo "    Node-RED   : http://${SERVER_IP}:${NODERED_PORT}"
+echo "    RagTak     : http://${SERVER_IP}:${TAKADMIN_PORT}"
 fi
 [[ $USE_LE -eq 1 ]] && \
 echo "" && \
@@ -2177,11 +2225,11 @@ echo ""
 echo -e "  ${CYAN}Next steps${NC}"
 echo "    1. Import ${CERT_OUT_DIR}/${ADMIN_USER}.p12 into Firefox/Chrome"
 echo "       (password: ${CERT_PASS})"
-echo "    2. Open: https://${DISPLAY_HOST}:${TAK_ADMIN_PORT}"
+echo "    2. Open: https://${SERVER_IP}:${TAK_ADMIN_PORT}"
 echo "    3. On each ATAK/WinTAK device:"
 echo "       a. Trust Store : ${CERT_OUT_DIR}/truststore-root.p12  (pass: ${CERT_PASS})"
 echo "       b. Client Cert : ${CERT_OUT_DIR}/client1.p12 .. client5.p12  (pass: ${CERT_PASS})"
-echo "       c. Server      : ssl://${DISPLAY_HOST}:${TAK_COT_PORT}"
+echo "       c. Server      : ssl://${SERVER_IP}:${TAK_COT_PORT}"
 echo ""
 echo -e "  ${CYAN}Mumble${NC}"
 echo "    Port       : ${MUMBLE_PORT} (TCP+UDP)"
@@ -2191,7 +2239,7 @@ echo "    Server pw  : ${MUMBLE_PASS}" || \
 echo "    Server pw  : (none)"
 echo ""
 echo -e "  ${CYAN}Node-RED${NC}"
-echo "    URL        : http://${DISPLAY_HOST}:${NODERED_PORT}"
+echo "    URL        : http://${SERVER_IP}:${NODERED_PORT}"
 echo "    Username   : ${NODERED_USER}"
 echo "    Password   : ${NODERED_PASS}"
 echo ""
@@ -2199,7 +2247,7 @@ echo -e "  ${CYAN}RagTak Admin Panel${NC}"
 if [[ "${INSTALL_OPENVPN:-no}" == "yes" ]]; then
 echo "    URL        : http://${OPENVPN_SUBNET}.1:${TAKADMIN_PORT}  (VPN only)"
 else
-echo "    URL        : http://${DISPLAY_HOST}:${TAKADMIN_PORT}"
+echo "    URL        : http://${SERVER_IP}:${TAKADMIN_PORT}"
 fi
 echo "    Username   : Admin"
 echo "    Password   : ${TAKADMIN_PASS}"

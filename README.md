@@ -15,7 +15,7 @@ Running one command installs and configures everything:
 - **MediaMTX** — video streaming (RTSP/HLS/WebRTC) for drone feeds and cameras
 - **Certificates** — automatically generated so all connections are encrypted
 - **Firewall** — configured automatically
-- **OpenVPN** *(optional)* — the script asks at startup whether to install it. If you say yes, all services are locked behind the VPN — only SSH and the OpenVPN port are reachable from the internet. Clients connect via the OpenVPN Connect app before accessing TAK, Mumble, or the admin panel
+- **OpenVPN** *(installed by default)* — all services are locked behind the VPN — only SSH and the OpenVPN port are reachable from the internet. Clients connect via the OpenVPN Connect app before accessing TAK, Mumble, or the admin panel. Pass `--no-openvpn` to skip it.
 
 ---
 
@@ -58,9 +58,9 @@ The script automatically configures the firewall on your server (UFW). However, 
 | 64738 | TCP + UDP | Mumble voice |
 | 1880 | TCP | Node-RED |
 | 8080 | TCP | RagTAK Admin Panel |
-| 1194 | UDP | OpenVPN *(only if you chose to install it)* |
+| 1194 | UDP | OpenVPN *(default — omit only if you used `--no-openvpn`)* |
 
-> If you install OpenVPN, ports 8089, 8443, 8080, 1880, and 64738 are **not** needed in the provider firewall — they are blocked from the internet and only reachable through the VPN tunnel. Only open 22 (SSH) and 1194 (OpenVPN).
+> OpenVPN is installed by default. In that case, ports 8089, 8443, 8080, 1880, and 64738 are **not** needed in the provider firewall — they are blocked from the internet and only reachable through the VPN tunnel. Only open 22 (SSH) and 1194 (OpenVPN). Pass `--no-openvpn` to the installer if you want all services exposed directly instead.
 
 > Where to find this setting: AWS → Security Groups, DigitalOcean → Firewall, Hetzner → Firewall, Vultr → Firewall Rules.
 
@@ -89,6 +89,26 @@ DOMAIN=tak.example.com sudo bash install_tak.sh
 Add an email to receive expiry notifications:
 ```bash
 DOMAIN=tak.example.com LE_EMAIL=you@example.com sudo bash install_tak.sh
+```
+
+### Command-line options
+
+| Flag | Effect |
+|------|--------|
+| `--openvpn` | Install OpenVPN (this is the default — listed for clarity). |
+| `--no-openvpn` | Skip OpenVPN. All services are exposed on the public network. |
+| `-h`, `--help` | Show usage and exit. |
+
+Examples:
+```bash
+# Default — installs OpenVPN, services are VPN-only
+sudo bash install_tak.sh
+
+# Skip OpenVPN — services are directly reachable on their public ports
+sudo bash install_tak.sh --no-openvpn
+
+# Skip OpenVPN together with a domain name for Let's Encrypt
+DOMAIN=tak.example.com sudo bash install_tak.sh --no-openvpn
 ```
 
 > The script takes about 2–5 minutes. Do not close the terminal while it runs.
@@ -254,7 +274,7 @@ The same certificates and connection steps work for both ATAK (Android) and iTAK
 
 ## Connecting via OpenVPN
 
-If you chose to install OpenVPN during setup, all services (TAK, Mumble, Node-RED, admin panel) are only reachable through the VPN tunnel. You must connect OpenVPN first, then connect ATAK/iTAK to `10.8.0.1` instead of the public IP.
+OpenVPN is installed by default (unless you passed `--no-openvpn`). In that case, all services (TAK, Mumble, Node-RED, admin panel) are only reachable through the VPN tunnel. You must connect OpenVPN first, then connect ATAK/iTAK to `10.8.0.1` instead of the public IP.
 
 Client config files (one per device) are in the `certs/` folder:
 
@@ -367,7 +387,7 @@ You can override any of these before running the script:
 | `NODERED_PASS` | *(auto-generated)* | Node-RED login password |
 | `TAKADMIN_PORT` | `8080` | RagTak Admin Panel port |
 | `TAKADMIN_PASS` | *(auto-generated)* | RagTak Admin Panel password |
-| `INSTALL_OPENVPN` | *(prompt)* | Set to `yes` or `no` to skip the prompt |
+| `INSTALL_OPENVPN` | `yes` | Override the OpenVPN default (`--no-openvpn` flag takes precedence) |
 | `OPENVPN_PORT` | `1194` | OpenVPN listen port |
 | `OPENVPN_PROTO` | `udp` | OpenVPN protocol (`udp` or `tcp`) |
 | `OPENVPN_SUBNET` | `10.8.0` | VPN subnet — server gets `.1`, clients get `.2+` |
