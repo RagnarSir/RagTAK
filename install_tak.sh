@@ -379,6 +379,7 @@ NODERED_PASS="${NODERED_PASS:-}"        # leave empty to auto-generate
 # TAK Admin Panel
 TAKADMIN_PORT="${TAKADMIN_PORT:-8080}"
 TAKADMIN_PASS="${TAKADMIN_PASS:-}"     # leave empty to auto-generate
+TAK_ADMIN_PASS="${TAK_ADMIN_PASS:-}"   # TAK web-admin password (auto-genereres)
 
 # OpenLDAP authentication for admin panel (use --use-ldap <url> <dn> to enable)
 USE_LDAP="${USE_LDAP:-no}"
@@ -1066,8 +1067,9 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
 ADMIN_USER   = os.environ.get('TAKADMIN_USER', 'Admin')
 ADMIN_PASS   = os.environ.get('TAKADMIN_PASS', 'changeme')
-LDAP_URL     = os.environ.get('LDAP_URL', '')
-LDAP_BASE_DN = os.environ.get('LDAP_BASE_DN', '')
+LDAP_URL       = os.environ.get('LDAP_URL', '')
+LDAP_BASE_DN   = os.environ.get('LDAP_BASE_DN', '')
+TAK_ADMIN_PASS = os.environ.get('TAK_ADMIN_PASS', '')
 TAK_DIR      = '/opt/tak'
 CERT_DIR     = f'{TAK_DIR}/certs/files'
 CERTS_SCRIPT = f'{TAK_DIR}/certs'
@@ -1154,7 +1156,11 @@ def ldap_authenticate(username, password):
         user_dn = f'uid={username},ou=people,{LDAP_BASE_DN}'
         server = LdapServer(LDAP_URL, get_info=None, connect_timeout=5)
         conn = LdapConnection(server, user=user_dn, password=password, auto_bind=False)
-        return conn.bind()
+        if not conn.bind():
+            return False
+        group_dn = f'cn=tak-admin,ou=groups,{LDAP_BASE_DN}'
+        conn.search(group_dn, f'(member={user_dn})', attributes=['member'])
+        return len(conn.entries) > 0
     except Exception:
         return False
 
@@ -1208,7 +1214,8 @@ def logout():
 def dashboard():
     statuses = [(svc, label, svc_status(svc)) for svc, label in SERVICES]
     stats = system_stats()
-    return render_template_string(T_DASH, statuses=statuses, stats=stats, host=HOST)
+    return render_template_string(T_DASH, statuses=statuses, stats=stats, host=HOST,
+                                  tak_admin_pass=TAK_ADMIN_PASS)
 
 
 @app.route('/api/stats')
@@ -1794,6 +1801,13 @@ T_DASH = page('''
          <div class="link-desc">Certs, bundles, configs</div></div>
   </a>
 </div>
+
+{% if tak_admin_pass %}
+<div class="section-title">Credentials</div>
+<div class="card"><div class="card-body" style="font-family:monospace;font-size:.95rem">
+  <b>TAK Web Admin</b> (port 8443) &mdash; <code>tak-admin / {{ tak_admin_pass }}</code>
+</div></div>
+{% endif %}
 ''')
 
 T_USERS = page('''
@@ -2010,6 +2024,7 @@ Environment=ORGANIZATION=${ORGANIZATION:-RagTAK}
 Environment=ORGANIZATIONAL_UNIT=${ORGANIZATIONAL_UNIT:-TAK}
 Environment=LDAP_URL=${LDAP_URL}
 Environment=LDAP_BASE_DN=${LDAP_BASE_DN}
+Environment=TAK_ADMIN_PASS=${TAK_ADMIN_PASS}
 
 [Install]
 WantedBy=multi-user.target
@@ -2223,6 +2238,17 @@ if [[ -f "$ADMIN_PEM" ]]; then
     warn "  sudo java -jar ${TAK_DIR}/utils/UserManager.jar certmod -A ${ADMIN_PEM}"
 fi
 
+# Generate TAK admin password meeting complexity requirements:
+# min 15 chars, 1 uppercase, 1 lowercase, 1 number, 1 special from [-_!@#$%^&*(){}[]+=~`|:;<>,./?]
+[[ -z "$TAK_ADMIN_PASS" ]] && \
+    TAK_ADMIN_PASS="$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 12)@Tak1!"
+
+info "Setting tak-admin password..."
+java -jar "${TAK_DIR}/utils/UserManager.jar" usermod -p "${TAK_ADMIN_PASS}" "${ADMIN_USER}" 2>/dev/null && \
+    success "tak-admin password set." || \
+    warn "Could not set tak-admin password — run manually:"
+warn "  sudo java -jar ${TAK_DIR}/utils/UserManager.jar usermod -p '<pass>' ${ADMIN_USER}"
+
 # ─── 18. Summary ──────────────────────────────────────────────────────────────
 
 echo ""
@@ -2284,6 +2310,7 @@ echo -e "  ${CYAN}Next steps${NC}"
 echo "    1. Import ${CERT_OUT_DIR}/${ADMIN_USER}.p12 into Firefox/Chrome"
 echo "       (password: ${CERT_PASS})"
 echo "    2. Open: https://${SERVER_IP}:${TAK_ADMIN_PORT}"
+echo "    TAK Admin  : ${ADMIN_USER} / ${TAK_ADMIN_PASS}  (web login, port ${TAK_ADMIN_PORT})"
 echo "    3. On each ATAK/WinTAK device:"
 echo "       a. Trust Store : ${CERT_OUT_DIR}/truststore-root.p12  (pass: ${CERT_PASS})"
 echo "       b. Client Cert : ${CERT_OUT_DIR}/client1.p12 .. client5.p12  (pass: ${CERT_PASS})"
