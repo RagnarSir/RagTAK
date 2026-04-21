@@ -385,6 +385,8 @@ TAK_ADMIN_PASS="${TAK_ADMIN_PASS:-}"   # TAK web-admin password (auto-genereres)
 USE_LDAP="${USE_LDAP:-no}"
 LDAP_URL="${LDAP_URL:-}"
 LDAP_BASE_DN="${LDAP_BASE_DN:-}"
+LDAP_ADMIN_DN="${LDAP_ADMIN_DN:-}"
+LDAP_ADMIN_PASS="${LDAP_ADMIN_PASS:-}"
 
 # OpenVPN (installed by default; use --no-openvpn or INSTALL_OPENVPN=no to skip)
 OPENVPN_PORT="${OPENVPN_PORT:-1194}"
@@ -1067,9 +1069,23 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 
 ADMIN_USER   = os.environ.get('TAKADMIN_USER', 'Admin')
 ADMIN_PASS   = os.environ.get('TAKADMIN_PASS', 'changeme')
-LDAP_URL       = os.environ.get('LDAP_URL', '')
-LDAP_BASE_DN   = os.environ.get('LDAP_BASE_DN', '')
-TAK_ADMIN_PASS = os.environ.get('TAK_ADMIN_PASS', '')
+LDAP_URL          = os.environ.get('LDAP_URL', '')
+LDAP_BASE_DN      = os.environ.get('LDAP_BASE_DN', '')
+LDAP_ADMIN_DN     = os.environ.get('LDAP_ADMIN_DN', '')
+LDAP_ADMIN_PASS   = os.environ.get('LDAP_ADMIN_PASS', '')
+TAK_ADMIN_PASS    = os.environ.get('TAK_ADMIN_PASS', '')
+TAK_COT_PORT      = os.environ.get('TAK_COT_PORT', '8089')
+TAK_ADMIN_PORT    = os.environ.get('TAK_ADMIN_PORT', '8443')
+TAK_ENROLL_PORT   = os.environ.get('TAK_ENROLL_PORT', '8446')
+RTSP_PORT         = os.environ.get('RTSP_PORT', '8554')
+MUMBLE_PORT       = os.environ.get('MUMBLE_PORT', '64738')
+MUMBLE_SUPER_PASS = os.environ.get('MUMBLE_SUPERUSER_PASS', '')
+MUMBLE_PASS       = os.environ.get('MUMBLE_PASS', '')
+NODERED_PORT      = os.environ.get('NODERED_PORT', '1880')
+NODERED_USER      = os.environ.get('NODERED_USER', 'admin')
+NODERED_PASS      = os.environ.get('NODERED_PASS', '')
+ADMIN_USER_CERT   = os.environ.get('ADMIN_USER', 'tak-admin')
+SERVER_NAME       = os.environ.get('SERVER_NAME', 'takserver')
 TAK_DIR      = '/opt/tak'
 CERT_DIR     = f'{TAK_DIR}/certs/files'
 CERTS_SCRIPT = f'{TAK_DIR}/certs'
@@ -1155,12 +1171,18 @@ def ldap_authenticate(username, password):
     try:
         user_dn = f'uid={username},ou=people,{LDAP_BASE_DN}'
         server = LdapServer(LDAP_URL, get_info=None, connect_timeout=5)
-        conn = LdapConnection(server, user=user_dn, password=password, auto_bind=False)
-        if not conn.bind():
-            return False
+        # Verify password by binding as the user
+        user_conn = LdapConnection(server, user=user_dn, password=password, auto_bind=True)
+        user_conn.unbind()
+        # Use admin credentials to search group membership
+        admin_dn = LDAP_ADMIN_DN or user_dn
+        admin_pw = LDAP_ADMIN_PASS or password
+        admin_conn = LdapConnection(server, user=admin_dn, password=admin_pw, auto_bind=True)
         group_dn = f'cn=tak-admin,ou=groups,{LDAP_BASE_DN}'
-        conn.search(group_dn, f'(member={user_dn})', attributes=['member'])
-        return len(conn.entries) > 0
+        admin_conn.search(group_dn, f'(member={user_dn})', attributes=['member'])
+        result = len(admin_conn.entries) > 0
+        admin_conn.unbind()
+        return result
     except Exception:
         return False
 
@@ -1216,6 +1238,27 @@ def dashboard():
     stats = system_stats()
     return render_template_string(T_DASH, statuses=statuses, stats=stats, host=HOST,
                                   tak_admin_pass=TAK_ADMIN_PASS)
+
+
+@app.route('/info')
+@login_required
+def info():
+    statuses = [(svc, label, svc_status(svc)) for svc, label in SERVICES]
+    clients = [p.stem for p in Path(CERT_OUT_DIR).glob('client*.p12')] if CERT_OUT_DIR else []
+    clients.sort()
+    return render_template_string(T_INFO,
+        host=HOST, statuses=statuses,
+        tak_cot_port=TAK_COT_PORT, tak_admin_port=TAK_ADMIN_PORT,
+        tak_enroll_port=TAK_ENROLL_PORT, rtsp_port=RTSP_PORT,
+        mumble_port=MUMBLE_PORT, mumble_super_pass=MUMBLE_SUPER_PASS,
+        mumble_pass=MUMBLE_PASS,
+        nodered_port=NODERED_PORT, nodered_user=NODERED_USER, nodered_pass=NODERED_PASS,
+        admin_user=ADMIN_USER_CERT, server_name=SERVER_NAME,
+        cert_out_dir=CERT_OUT_DIR, cert_pass=CERT_PASS,
+        tak_admin_pass=TAK_ADMIN_PASS,
+        takadmin_user=ADMIN_USER, takadmin_pass=ADMIN_PASS,
+        takadmin_port=str(os.environ.get('TAKADMIN_PORT', '8080')),
+        clients=clients)
 
 
 @app.route('/api/stats')
@@ -1800,12 +1843,87 @@ T_DASH = page('''
     <div><div class="link-title">Downloads</div>
          <div class="link-desc">Certs, bundles, configs</div></div>
   </a>
+  <a href="/info" class="link-card">
+    <div class="link-icon">&#128220;</div>
+    <div><div class="link-title">Server Info</div>
+         <div class="link-desc">Endpoints &amp; credentials</div></div>
+  </a>
 </div>
 
-{% if tak_admin_pass %}
+''')
+
+T_INFO = page('''
+<div class="section-title">Service Status</div>
+<div class="svc-grid">
+{% for svc, label, status in statuses %}
+  <div class="svc-card {{ status }}">
+    <div class="svc-name">{{ label }}</div>
+    <div class="svc-status">
+      <div class="dot dot-{{ status }}"></div>
+      <span class="status-text-{{ status }}">{{ status }}</span>
+    </div>
+  </div>
+{% endfor %}
+</div>
+
+<div class="section-title">Endpoints</div>
+<div class="card"><div class="card-body" style="font-family:monospace;font-size:.9rem;line-height:2">
+  <table style="border-collapse:collapse;width:100%">
+    <tr><td style="color:var(--muted);padding-right:1.5rem">Web Admin</td>  <td><a href="https://{{ host }}:{{ tak_admin_port }}" target="_blank">https://{{ host }}:{{ tak_admin_port }}</a></td></tr>
+    <tr><td style="color:var(--muted)">CoT/ATAK</td>   <td>ssl://{{ host }}:{{ tak_cot_port }}</td></tr>
+    <tr><td style="color:var(--muted)">Enrollment</td>  <td><a href="https://{{ host }}:{{ tak_enroll_port }}" target="_blank">https://{{ host }}:{{ tak_enroll_port }}</a></td></tr>
+    <tr><td style="color:var(--muted)">RTSP Video</td>  <td>rtsp://{{ host }}:{{ rtsp_port }}/&lt;stream-name&gt;</td></tr>
+    <tr><td style="color:var(--muted)">Mumble</td>      <td>{{ host }}:{{ mumble_port }}</td></tr>
+    <tr><td style="color:var(--muted)">Node-RED</td>    <td><a href="http://{{ host }}:{{ nodered_port }}" target="_blank">http://{{ host }}:{{ nodered_port }}</a></td></tr>
+    <tr><td style="color:var(--muted)">RagTAK</td>      <td><a href="http://{{ host }}:{{ takadmin_port }}" target="_blank">http://{{ host }}:{{ takadmin_port }}</a></td></tr>
+  </table>
+</div></div>
+
 <div class="section-title">Credentials</div>
-<div class="card"><div class="card-body" style="font-family:monospace;font-size:.95rem">
-  <b>TAK Web Admin</b> (port 8443) &mdash; <code>tak-admin / {{ tak_admin_pass }}</code>
+<div class="card"><div class="card-body" style="font-family:monospace;font-size:.9rem;line-height:2">
+  <table style="border-collapse:collapse;width:100%">
+    {% if tak_admin_pass %}
+    <tr><td style="color:var(--muted);padding-right:1.5rem">TAK Web Admin</td><td>{{ admin_user }} / {{ tak_admin_pass }}</td></tr>
+    {% endif %}
+    {% if mumble_super_pass %}
+    <tr><td style="color:var(--muted)">Mumble SuperUser</td><td>SuperUser / {{ mumble_super_pass }}</td></tr>
+    {% endif %}
+    {% if mumble_pass %}
+    <tr><td style="color:var(--muted)">Mumble Server pw</td><td>{{ mumble_pass }}</td></tr>
+    {% endif %}
+    {% if nodered_pass %}
+    <tr><td style="color:var(--muted)">Node-RED</td><td>{{ nodered_user }} / {{ nodered_pass }}</td></tr>
+    {% endif %}
+    <tr><td style="color:var(--muted)">RagTAK Panel</td><td>{{ takadmin_user }} / {{ takadmin_pass }}</td></tr>
+  </table>
+</div></div>
+
+{% if cert_out_dir %}
+<div class="section-title">Certificates  ({{ cert_out_dir }})</div>
+<div class="card"><div class="card-body" style="font-family:monospace;font-size:.9rem;line-height:2">
+  <table style="border-collapse:collapse;width:100%">
+    <tr><td style="color:var(--muted);padding-right:1.5rem">Root CA</td>    <td>{{ cert_out_dir }}/root-ca.pem &nbsp;<span style="color:var(--muted)">&larr; import i Firefox (Authorities)</span></td></tr>
+    <tr><td style="color:var(--muted)">Server</td>      <td>/opt/tak/certs/files/{{ server_name }}.p12 &nbsp;<span style="color:var(--muted)">(pass: {{ cert_pass }})</span></td></tr>
+    <tr><td style="color:var(--muted)">Admin</td>       <td>{{ cert_out_dir }}/{{ admin_user }}.p12 &nbsp;<span style="color:var(--muted)">&larr; import i Firefox (Your Certificates) (pass: {{ cert_pass }})</span></td></tr>
+    {% for c in clients %}
+    <tr><td style="color:var(--muted)">{{ c }}</td>     <td>{{ cert_out_dir }}/{{ c }}.p12 &nbsp;<span style="color:var(--muted)">(pass: {{ cert_pass }})</span></td></tr>
+    {% endfor %}
+  </table>
+</div></div>
+
+<div class="section-title">Next Steps</div>
+<div class="card"><div class="card-body" style="font-size:.95rem;line-height:1.8">
+  <ol style="margin:0;padding-left:1.2rem">
+    <li>Importer <code>{{ cert_out_dir }}/{{ admin_user }}.p12</code> i Firefox/Chrome &nbsp;<span style="color:var(--muted)">(password: {{ cert_pass }})</span></li>
+    <li>Åbn <a href="https://{{ host }}:{{ tak_admin_port }}" target="_blank">https://{{ host }}:{{ tak_admin_port }}</a></li>
+    <li>På hvert ATAK/WinTAK-device:
+      <ul style="margin:.3rem 0;padding-left:1.2rem">
+        <li>Trust Store: <code>{{ cert_out_dir }}/truststore-root.p12</code> &nbsp;<span style="color:var(--muted)">(pass: {{ cert_pass }})</span></li>
+        <li>Client Cert: <code>{{ cert_out_dir }}/client1.p12</code> &nbsp;<span style="color:var(--muted)">(pass: {{ cert_pass }})</span></li>
+        <li>Server: <code>ssl://{{ host }}:{{ tak_cot_port }}</code></li>
+      </ul>
+    </li>
+  </ol>
 </div></div>
 {% endif %}
 ''')
@@ -2024,7 +2142,22 @@ Environment=ORGANIZATION=${ORGANIZATION:-RagTAK}
 Environment=ORGANIZATIONAL_UNIT=${ORGANIZATIONAL_UNIT:-TAK}
 Environment=LDAP_URL=${LDAP_URL}
 Environment=LDAP_BASE_DN=${LDAP_BASE_DN}
+Environment=LDAP_ADMIN_DN=${LDAP_ADMIN_DN}
+Environment=LDAP_ADMIN_PASS=${LDAP_ADMIN_PASS}
 Environment=TAK_ADMIN_PASS=${TAK_ADMIN_PASS}
+Environment=TAK_COT_PORT=${TAK_COT_PORT}
+Environment=TAK_ADMIN_PORT=${TAK_ADMIN_PORT}
+Environment=TAK_ENROLL_PORT=${TAK_ENROLL_PORT}
+Environment=RTSP_PORT=${RTSP_PORT}
+Environment=MUMBLE_PORT=${MUMBLE_PORT}
+Environment=MUMBLE_SUPERUSER_PASS=${MUMBLE_SUPERUSER_PASS}
+Environment=MUMBLE_PASS=${MUMBLE_PASS}
+Environment=NODERED_PORT=${NODERED_PORT}
+Environment=NODERED_USER=${NODERED_USER}
+Environment=NODERED_PASS=${NODERED_PASS}
+Environment=ADMIN_USER=${ADMIN_USER}
+Environment=SERVER_NAME=${SERVER_NAME}
+Environment=CERT_OUT_DIR=${CERT_OUT_DIR}
 
 [Install]
 WantedBy=multi-user.target
