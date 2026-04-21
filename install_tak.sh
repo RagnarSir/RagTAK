@@ -1889,9 +1889,7 @@ T_INFO = page('''
 <div class="section-title">Credentials</div>
 <div class="card"><div class="card-body" style="font-family:monospace;font-size:.9rem;line-height:2">
   <table style="border-collapse:collapse;width:100%">
-    {% if tak_admin_pass %}
-    <tr><td style="color:var(--muted);padding-right:1.5rem">TAK Web Admin</td><td>{{ admin_user }} / {{ tak_admin_pass }}</td></tr>
-    {% endif %}
+    <tr><td style="color:var(--muted);padding-right:1.5rem">TAK Web Admin</td><td>{{ admin_user }} / {% if tak_admin_pass %}{{ tak_admin_pass }}{% else %}<span style="color:var(--muted)">ikke sat — kør: java -jar /opt/tak/utils/UserManager.jar usermod -p &apos;&lt;pass&gt;&apos; {{ admin_user }}</span>{% endif %}</td></tr>
     {% if mumble_super_pass %}
     <tr><td style="color:var(--muted)">Mumble SuperUser</td><td>SuperUser / {{ mumble_super_pass }}</td></tr>
     {% endif %}
