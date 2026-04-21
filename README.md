@@ -97,7 +97,7 @@ DOMAIN=tak.example.com LE_EMAIL=you@example.com sudo bash install_tak.sh
 |------|--------|
 | `--openvpn` | Install OpenVPN (this is the default — listed for clarity). |
 | `--no-openvpn` | Skip OpenVPN. All services are exposed on the public network. |
-| `--use-ldap <url> <base-dn>` | Enable OpenLDAP login for the admin panel. Login binds as `uid=<username>,ou=people,<base-dn>`. Example: `--use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"` |
+| `--use-ldap <url> <base-dn>` | Enable OpenLDAP login for the admin panel. Login binds as `uid=<username>,ou=people,<base-dn>` and only succeeds if the user is a member of `cn=tak-admin,ou=groups,<base-dn>`. Example: `--use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"` |
 | `-h`, `--help` | Show usage and exit. |
 
 Examples:
@@ -154,6 +154,11 @@ At the end of the script you will see a summary like this:
     URL        : http://192.168.1.11:8080
     Username   : Admin
     Password   : <generated-password>
+
+  Next steps
+    1. Import .../tak-admin.p12 into Firefox/Chrome
+    TAK Admin  : tak-admin / <generated-password>  (web login, port 8443)
+    ...
 ```
 
 **Save this output** — it contains generated passwords you will need.
@@ -197,7 +202,12 @@ Log in with `Admin` and the password printed in the install summary.
 
 ## Connecting your browser (TAK web admin)
 
-The TAK web admin at port 8443 uses client certificates for login — a password alone is not enough. You need to import two files into your browser first.
+The TAK web admin at port 8443 supports two login methods:
+
+- **Certificate login** — import `tak-admin.p12` into your browser (see steps below). This is the primary method and works in all browsers.
+- **Username / password login** — use `tak-admin` and the password printed in the install summary under **TAK Admin**. This works without any certificate import, directly at the login screen.
+
+To use certificate login, import two files into your browser first.
 
 ### Firefox
 
@@ -391,6 +401,7 @@ You can override any of these before running the script:
 | `NODERED_PASS` | *(auto-generated)* | Node-RED login password |
 | `TAKADMIN_PORT` | `8080` | RagTak Admin Panel port |
 | `TAKADMIN_PASS` | *(auto-generated)* | RagTak Admin Panel password |
+| `TAK_ADMIN_PASS` | *(auto-generated)* | TAK web admin (port 8443) password for the `tak-admin` user |
 | `INSTALL_OPENVPN` | `yes` | Override the OpenVPN default (`--no-openvpn` flag takes precedence) |
 | `OPENVPN_PORT` | `1194` | OpenVPN listen port |
 | `OPENVPN_PROTO` | `udp` | OpenVPN protocol (`udp` or `tcp`) |
