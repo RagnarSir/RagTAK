@@ -299,11 +299,15 @@ while [[ $# -gt 0 ]]; do
         --openvpn)       INSTALL_OPENVPN=yes ;;
         --no-openvpn)    INSTALL_OPENVPN=no  ;;
         --use-ldap)
-            [[ $# -ge 3 ]] || die "--use-ldap requires two arguments: <ldap-url> <base-dn>\n  Example: --use-ldap ldap://10.8.0.2:389 \"dc=example,dc=com\""
+            [[ $# -ge 3 ]] || die "--use-ldap requires at least two arguments: <ldap-url> <base-dn>\n  Example: --use-ldap ldap://10.8.0.2:389 \"dc=example,dc=com\" \"cn=admin,dc=example,dc=com\" \"secret\""
             USE_LDAP=yes
             LDAP_URL="$2"
             LDAP_BASE_DN="$3"
+            LDAP_ADMIN_DN="${4:-}"
+            LDAP_ADMIN_PASS="${5:-}"
             shift 2
+            [[ -n "$LDAP_ADMIN_DN" ]]   && shift
+            [[ -n "$LDAP_ADMIN_PASS" ]] && shift
             ;;
         -h|--help)
             cat << 'HELP'
@@ -312,10 +316,13 @@ Usage: sudo bash install_tak.sh [options]
 Options:
   --openvpn                Install OpenVPN (default — listed for clarity).
   --no-openvpn             Skip OpenVPN installation.
-  --use-ldap <url> <base-dn>   Enable OpenLDAP authentication for the admin panel.
-                               Login builds: uid=<username>,ou=people,<base-dn>
+  --use-ldap <url> <base-dn> [<admin-dn> <admin-pass>]
+                               Enable OpenLDAP authentication for the admin panel.
+                               Login binds as uid=<username>,ou=people,<base-dn>
+                               and requires membership of cn=tak-admin,ou=groups,<base-dn>.
+                               admin-dn and admin-pass are used for group lookup (recommended).
                                Example:
-                                 --use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"
+                                 --use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk" "cn=admin,dc=hjv,dc=dk" "secret"
   -h, --help                   Show this help and exit.
 
 Environment variables (see README for the full list):
