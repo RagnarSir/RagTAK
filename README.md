@@ -97,7 +97,7 @@ DOMAIN=tak.example.com LE_EMAIL=you@example.com sudo bash install_tak.sh
 |------|--------|
 | `--openvpn` | Install OpenVPN (this is the default — listed for clarity). |
 | `--no-openvpn` | Skip OpenVPN. All services are exposed on the public network. |
-| `--use-ldap <url> <base-dn>` | Enable OpenLDAP login for the admin panel. Login binds as `uid=<username>,ou=people,<base-dn>` and only succeeds if the user is a member of `cn=tak-admin,ou=groups,<base-dn>`. Example: `--use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"` |
+| `--use-ldap <url> <base-dn> [<admin-dn> <admin-pass>]` | Enable OpenLDAP login for the admin panel. Login binds as `uid=<username>,ou=people,<base-dn>` and only succeeds if the user is a member of `cn=tak-admin,ou=groups,<base-dn>`. Example: `--use-ldap ldap://10.8.0.2:389 "dc=example,dc=com" "cn=admin,dc=example,dc=com" "secret"` |
 | `-h`, `--help` | Show usage and exit. |
 
 Examples:
@@ -112,7 +112,7 @@ sudo bash install_tak.sh --no-openvpn
 DOMAIN=tak.example.com sudo bash install_tak.sh --no-openvpn
 
 # Enable LDAP login for the admin panel
-sudo bash install_tak.sh --use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk"
+sudo bash install_tak.sh --use-ldap ldap://10.8.0.2:389 "dc=example,dc=com" "cn=admin,dc=example,dc=com" "secret"
 ```
 
 > The script takes about 2–5 minutes. Do not close the terminal while it runs.
@@ -408,7 +408,7 @@ You can override any of these before running the script:
 | `OPENVPN_SUBNET` | `10.8.0` | VPN subnet — server gets `.1`, clients get `.2+` |
 | `SKIP_MEDIAMTX` | *(unset)* | Set to any value to skip MediaMTX install |
 | `LDAP_URL` | *(empty)* | LDAP server URL, e.g. `ldap://10.8.0.2:389`. Set together with `LDAP_BASE_DN` and `USE_LDAP=yes` to enable LDAP login |
-| `LDAP_BASE_DN` | *(empty)* | Base DN, e.g. `dc=hjv,dc=dk`. Login binds as `uid=<username>,ou=people,<base-dn>` |
+| `LDAP_BASE_DN` | *(empty)* | Base DN, e.g. `dc=example,dc=com`. Login binds as `uid=<username>,ou=people,<base-dn>` |
 
 Example:
 ```bash

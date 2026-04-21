@@ -322,7 +322,7 @@ Options:
                                and requires membership of cn=tak-admin,ou=groups,<base-dn>.
                                admin-dn and admin-pass are used for group lookup (recommended).
                                Example:
-                                 --use-ldap ldap://10.8.0.2:389 "dc=hjv,dc=dk" "cn=admin,dc=hjv,dc=dk" "secret"
+                                 --use-ldap ldap://10.8.0.2:389 "dc=example,dc=com" "cn=admin,dc=example,dc=com" "secret"
   -h, --help                   Show this help and exit.
 
 Environment variables (see README for the full list):
@@ -332,7 +332,7 @@ Environment variables (see README for the full list):
   INSTALL_OPENVPN=yes|no  Override OpenVPN default (flags take precedence).
   USE_LDAP=yes            Enable LDAP auth (set LDAP_URL and LDAP_BASE_DN too).
   LDAP_URL=…              LDAP server URL, e.g. ldap://10.8.0.2:389
-  LDAP_BASE_DN=…          Base DN, e.g. dc=hjv,dc=dk
+  LDAP_BASE_DN=…          Base DN, e.g. dc=example,dc=com
 HELP
             exit 0 ;;
         *)  die "Unknown argument: $1 (try --help)" ;;
