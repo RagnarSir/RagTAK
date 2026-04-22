@@ -1451,7 +1451,7 @@ def _build_atak_datapackage(username):
             f"<preferences>\n"
             f"  <preference version=\"1\" name=\"cot_streams\">\n"
             f"    <entry key=\"count\" class=\"class java.lang.Integer\">1</entry>\n"
-            f"    <entry key=\"description0\" class=\"class java.lang.String\">TAK Server</entry>\n"
+            f"    <entry key=\"description0\" class=\"class java.lang.String\">{HOST}</entry>\n"
             f"    <entry key=\"enabled0\" class=\"class java.lang.Boolean\">true</entry>\n"
             f"    <entry key=\"connectString0\" class=\"class java.lang.String\">{HOST}:8089:ssl</entry>\n"
             f"  </preference>\n"
