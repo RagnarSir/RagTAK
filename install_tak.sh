@@ -1059,7 +1059,7 @@ cat > "${TAKADMIN_DIR}/takadmin.py" << 'PYEOF'
 #!/usr/bin/env python3
 """RagTAK Admin Panel — unified management for TAK Server and companion services."""
 
-import io, os, re, secrets, shutil, subprocess, threading, time, zipfile
+import io, os, re, secrets, shutil, subprocess, threading, time, uuid, zipfile
 from functools import wraps
 from pathlib import Path
 from flask import (Flask, flash, jsonify, redirect, render_template_string,
@@ -1417,31 +1417,66 @@ def dl_browser():
                      as_attachment=True, download_name='tak-browser-bundle.zip')
 
 
+def _build_atak_datapackage(username):
+    """Build a proper ATAK Data Package zip for the given username."""
+    out = Path(CERT_OUT_DIR)
+    folder = f'{username}-datapackage'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        for fn in [f'{username}.p12', 'truststore-root.p12']:
+            p = out / fn
+            if p.exists():
+                z.write(p, f'{folder}/{fn}')
+        if (out / f'{username}.ovpn').exists():
+            z.write(out / f'{username}.ovpn', f'{folder}/{username}.ovpn')
+        manifest = (
+            f'<MissionPackageManifest version="2">\n'
+            f'  <Configuration>\n'
+            f'    <Parameter name="uid" value="{uuid.uuid4()}"/>\n'
+            f'    <Parameter name="name" value="TAK Server Connection"/>\n'
+            f'  </Configuration>\n'
+            f'  <Contents>\n'
+            f'    <Content zipEntry="{folder}/{username}.p12" ignore="false">\n'
+            f'      <Parameter name="location" value="/cert/{username}.p12"/>\n'
+            f'    </Content>\n'
+            f'    <Content zipEntry="{folder}/truststore-root.p12" ignore="false">\n'
+            f'      <Parameter name="location" value="/cert/truststore-root.p12"/>\n'
+            f'    </Content>\n'
+            f'    <Content zipEntry="{folder}/server.pref" ignore="false"/>\n'
+            f'  </Contents>\n'
+            f'</MissionPackageManifest>\n'
+        )
+        server_pref = (
+            f"<?xml version='1.0' standalone='yes'?>\n"
+            f"<preferences>\n"
+            f"  <preference version=\"1\" name=\"cot_streams\">\n"
+            f"    <entry key=\"count\" class=\"class java.lang.Integer\">1</entry>\n"
+            f"    <entry key=\"description0\" class=\"class java.lang.String\">TAK Server</entry>\n"
+            f"    <entry key=\"enabled0\" class=\"class java.lang.Boolean\">true</entry>\n"
+            f"    <entry key=\"connectString0\" class=\"class java.lang.String\">{HOST}:8089:ssl</entry>\n"
+            f"  </preference>\n"
+            f"  <preference version=\"1\" name=\"com.atakmap.app_preferences\">\n"
+            f"    <entry key=\"caLocation\" class=\"class java.lang.String\">/cert/truststore-root.p12</entry>\n"
+            f"    <entry key=\"caPassword\" class=\"class java.lang.String\">{CERT_PASS}</entry>\n"
+            f"    <entry key=\"clientPassword\" class=\"class java.lang.String\">{CERT_PASS}</entry>\n"
+            f"    <entry key=\"certificateLocation\" class=\"class java.lang.String\">/cert/{username}.p12</entry>\n"
+            f"  </preference>\n"
+            f"</preferences>\n"
+        )
+        z.writestr(f'{folder}/manifest.xml', manifest)
+        z.writestr(f'{folder}/server.pref', server_pref)
+    buf.seek(0)
+    return buf
+
+
 @app.route('/download/bundle/atak/<username>')
 @login_required
 def dl_atak(username):
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', username):
         return 'Invalid', 400
-    buf = io.BytesIO()
-    out = Path(CERT_OUT_DIR)
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-        for fn in ['truststore-root.p12', f'{username}.p12', f'{username}.ovpn']:
-            p = out / fn
-            if p.exists():
-                z.write(p, fn)
-        ovpn_line = (f'  OpenVPN    : {username}.ovpn  (import into OpenVPN Connect app)\n'
-                     if (out / f'{username}.ovpn').exists() else '')
-        z.writestr('README.txt',
-            f'TAK Device Bundle — {username}\n'
-            f'==============================\n\n'
-            f'ATAK / iTAK / WinTAK connection\n'
-            f'  Server     : ssl://{HOST}:8089\n'
-            f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
-            f'  Client Cert: {username}.p12        (password: {CERT_PASS})\n'
-            + ovpn_line)
-    buf.seek(0)
+    buf = _build_atak_datapackage(username)
     return send_file(buf, mimetype='application/zip',
-                     as_attachment=True, download_name=f'tak-atak-{username}.zip')
+                     as_attachment=True, download_name=f'{username}-datapackage.zip')
 
 
 @app.route('/share/create', methods=['POST'])
@@ -1490,26 +1525,9 @@ def share_download(token):
     if share_type == 'atak':
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', arg):
             return 'Invalid', 400
-        buf = io.BytesIO()
-        out = Path(CERT_OUT_DIR)
-        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            for fn in ['truststore-root.p12', f'{arg}.p12', f'{arg}.ovpn']:
-                p = out / fn
-                if p.exists():
-                    z.write(p, fn)
-            ovpn_line = (f'  OpenVPN    : {arg}.ovpn  (import into OpenVPN Connect app)\n'
-                         if (out / f'{arg}.ovpn').exists() else '')
-            z.writestr('README.txt',
-                f'TAK Device Bundle - {arg}\n'
-                f'==============================\n\n'
-                f'ATAK / iTAK / WinTAK connection\n'
-                f'  Server     : ssl://{HOST}:8089\n'
-                f'  Trust Store: truststore-root.p12  (password: {CERT_PASS})\n'
-                f'  Client Cert: {arg}.p12             (password: {CERT_PASS})\n'
-                + ovpn_line)
-        buf.seek(0)
+        buf = _build_atak_datapackage(arg)
         return send_file(buf, mimetype='application/zip',
-                         as_attachment=True, download_name=f'tak-atak-{arg}.zip')
+                         as_attachment=True, download_name=f'{arg}-datapackage.zip')
     elif share_type == 'file':
         out    = Path(CERT_OUT_DIR).resolve()
         target = (out / arg).resolve()
