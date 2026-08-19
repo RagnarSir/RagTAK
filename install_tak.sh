@@ -299,7 +299,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --openvpn)       INSTALL_OPENVPN=yes ;;
         --no-openvpn)    INSTALL_OPENVPN=no  ;;
-        --tak-ldap)      TAK_LDAP=yes ;;
+        --tak-ldap)      TAK_LDAP=yes ;;   # kept as an alias; --use-ldap now implies it
+        --no-tak-ldap)   TAK_LDAP=no  ;;
         --no-cert-enrollment) CERT_ENROLLMENT=no ;;
         --use-ldap)
             [[ $# -ge 3 ]] || die "--use-ldap requires at least two arguments: <ldap-url> <base-dn>\n  Example: --use-ldap ldap://10.8.0.2:389 \"dc=example,dc=com\" \"cn=admin,dc=example,dc=com\" \"secret\""
@@ -323,13 +324,18 @@ Options:
                                Enable OpenLDAP authentication for the admin panel.
                                Login binds as uid=<username>,ou=people,<base-dn>
                                and requires membership of cn=tak-admin,ou=groups,<base-dn>.
-  --tak-ldap                   Also point TAK Server itself at that directory, so
-                               ATAK clients and the web admin authenticate against
-                               it. Requires --use-ldap. Defaults suit a stock
+                               TAK Server itself is pointed at the same directory,
+                               so devices enrolling over the certificate port
+                               authenticate against it too. Defaults suit a stock
                                OpenLDAP; override with LDAP_USER_RDN,
                                LDAP_GROUP_RDN, LDAP_USER_OBJECTCLASS,
                                LDAP_GROUP_OBJECTCLASS, LDAP_GROUP_PREFIX,
                                LDAP_ADMIN_GROUP, LDAP_UPDATE_INTERVAL.
+                               Ordinary users must be able to read the group
+                               subtree — TAK searches it as the user, not as
+                               serviceAccountDN.
+  --no-tak-ldap                Configure only the admin panel, leaving TAK
+                               Server's own authentication untouched.
                                admin-dn and admin-pass are used for group lookup (recommended).
                                Example:
                                  --use-ldap ldap://10.8.0.2:389 "dc=example,dc=com" "cn=admin,dc=example,dc=com" "secret"
@@ -401,11 +407,12 @@ TAK_ADMIN_PASS="${TAK_ADMIN_PASS:-}"   # TAK web-admin password (auto-genereres)
 # OpenLDAP authentication for admin panel (use --use-ldap <url> <dn> to enable)
 USE_LDAP="${USE_LDAP:-no}"
 
-# Point TAK Server itself at the same directory (--tak-ldap). Separate from
-# --use-ldap, which only covers this panel: switching TAK Server's own
-# authentication is a change existing installs should opt into.
+# --use-ldap points both this panel and TAK Server itself at the directory.
+# Configuring only the panel left ATAK and WinTAK unable to use the directory at
+# all, which is not what the flag reads like. Pass --no-tak-ldap for the old
+# behaviour of configuring the panel alone.
 # Defaults describe a stock OpenLDAP; override for a different layout.
-TAK_LDAP="${TAK_LDAP:-no}"
+TAK_LDAP="${TAK_LDAP:-$USE_LDAP}"
 
 # Certificate enrollment lets a client obtain its own certificate by
 # authenticating — the flow ATAK and WinTAK use to onboard a device. Without it
@@ -733,17 +740,16 @@ if [[ -f "$CORECONFIG" ]]; then
     fi
 fi
 
-# ─── Point TAK Server at OpenLDAP (--tak-ldap) ───────────────────────────────
-# --use-ldap only covers the admin panel; TAK Server has its own authentication
-# in CoreConfig.xml, and shipping it unconfigured means ATAK clients and the web
-# admin never see the directory at all.
+# ─── Point TAK Server at OpenLDAP ────────────────────────────────────────────
+# TAK Server keeps its own authentication in CoreConfig.xml, separate from this
+# panel. Leaving it unconfigured means ATAK and WinTAK never see the directory.
 #
 # The defaults describe a stock OpenLDAP (style="DS"): people under ou=people as
 # inetOrgPerson, groups under ou=groups as groupOfNames holding full member DNs.
 # Active Directory installs should pass style/objectclass overrides.
 if [[ "$TAK_LDAP" == "yes" && -f "$CORECONFIG" ]]; then
     if [[ "$USE_LDAP" != "yes" ]]; then
-        die "--tak-ldap requires --use-ldap <url> <base-dn> [<bind-dn> <bind-pass>]"
+        die "TAK Server LDAP requires --use-ldap <url> <base-dn> [<bind-dn> <bind-pass>]"
     fi
     info "Configuring TAK Server authentication against ${LDAP_URL}..."
 
