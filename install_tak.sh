@@ -1724,13 +1724,12 @@ def _connection_package(client_cert=None, desc=None, folder=None):
     if client_cert:
         entries.append(client_cert.name)
 
-    # zipEntry is copied from packages known to work on these devices, which
-    # carry a "certs\\" prefix while holding no certs directory at all — so the
-    # client reads it as a name, not a path into the zip. Whether it also uses
-    # the prefix to decide where the file lands on the device is untested, and
-    # matching the working package costs nothing either way.
+    # Bare filenames. zipEntry is not a path into the zip: packages that import
+    # cleanly carry a "certs\\" prefix while holding no certs directory, and
+    # dropping the prefix imports just as cleanly — verified on iTAK against a
+    # package built here.
     contents = '\n'.join(
-        f'    <Content ignore="false" zipEntry="certs\\{e}"/>' for e in entries)
+        f'    <Content ignore="false" zipEntry="{e}"/>' for e in entries)
     manifest = (
         f'<MissionPackageManifest version="2">\n'
         f'  <Configuration>\n'
