@@ -823,6 +823,15 @@ PYEOF
         success "TAK Server will authenticate against ${LDAP_URL}"
         info "  users:  uid=<name>,${LDAP_USER_RDN},${LDAP_BASE_DN}"
         info "  groups: ${LDAP_GROUP_OBJECTCLASS} under ${LDAP_GROUP_RDN},${LDAP_BASE_DN}"
+        echo ""
+        warn "TAK searches for groups on the connection it bound as the user, not"
+        warn "as serviceAccountDN. Ordinary users therefore need read access to"
+        warn "${LDAP_GROUP_RDN},${LDAP_BASE_DN} or every login lands with no groups"
+        warn "and no data. On OpenLDAP a denied search returns \"No such object\","
+        warn "so this looks like a missing base rather than a permission problem."
+        warn "Check with:  ldapsearch -x -H ${LDAP_URL} \\"
+        warn "               -D uid=<user>,${LDAP_USER_RDN},${LDAP_BASE_DN} -W \\"
+        warn "               -b ${LDAP_GROUP_RDN},${LDAP_BASE_DN} cn"
     else
         die "Failed to configure LDAP in ${CORECONFIG}"
     fi
