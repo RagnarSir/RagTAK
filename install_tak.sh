@@ -1821,11 +1821,33 @@ def dl_atak(username):
                      as_attachment=True, download_name=f'{username}-datapackage.zip')
 
 
+def _qr_svg(payload):
+    """Render a QR for any payload, or None when the qrcode module is absent."""
+    try:
+        import qrcode, qrcode.image.svg
+    except ImportError:
+        return None
+    qr  = qrcode.make(payload, image_factory=qrcode.image.svg.SvgPathImage,
+                      box_size=8, border=2)
+    buf = io.BytesIO()
+    qr.save(buf)
+    svg = buf.getvalue().decode('utf-8')
+    if svg.startswith('<?xml'):
+        svg = svg[svg.index('<svg'):]
+    return svg
+
+
 @app.route('/share/create', methods=['POST'])
 @login_required
 def share_create():
     share_type = request.form.get('type', '')
     arg        = request.form.get('arg', '')
+    if share_type == 'itak':
+        # iTAK reads a quick-connect CSV straight out of the QR — no download,
+        # no token. It only adds the server entry: the device still needs this
+        # server's CA before it can connect, since the CA is self-signed.
+        payload = f'{HOST},{HOST},{TAK_COT_PORT},ssl'
+        return jsonify(url=payload, svg=_qr_svg(payload))
     if share_type == 'atak':
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', arg):
             return jsonify(error='Invalid username'), 400
@@ -1842,18 +1864,7 @@ def share_create():
     with _share_lock:
         _share_tokens[token] = {'type': share_type, 'arg': arg, 'exp': time.time() + 900}
     share_url = request.host_url.rstrip('/') + f'/share/{token}'
-    try:
-        import qrcode, qrcode.image.svg
-        qr  = qrcode.make(share_url, image_factory=qrcode.image.svg.SvgPathImage,
-                          box_size=8, border=2)
-        buf = io.BytesIO()
-        qr.save(buf)
-        svg = buf.getvalue().decode('utf-8')
-        if svg.startswith('<?xml'):
-            svg = svg[svg.index('<svg'):]
-    except ImportError:
-        svg = None
-    return jsonify(url=share_url, svg=svg)
+    return jsonify(url=share_url, svg=_qr_svg(share_url))
 
 
 @app.route('/share/<token>')
@@ -2412,6 +2423,16 @@ T_DL = page('''
         <td><a href="/download/bundle/enroll" download>&#8659; Download</a></td>
         <td><button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
                     onclick="showQr(&quot;enroll&quot;,&quot;&quot;)">&#9636; QR</button></td>
+      </tr>
+      <tr>
+        <td>iTAK quick-connect<br>
+            <small style="color:var(--muted)">Adds the server entry to iTAK from
+            its Servers screen. It carries no certificate, so import the bundle
+            above on the device first — this CA is self-signed, and without it
+            the connection is refused however the server was added.</small></td>
+        <td><span style="color:var(--muted)">&mdash;</span></td>
+        <td><button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
+                    onclick="showQr(&quot;itak&quot;,&quot;&quot;)">&#9636; QR</button></td>
       </tr>
     </tbody>
   </table>
