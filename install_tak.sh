@@ -299,6 +299,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --openvpn)       INSTALL_OPENVPN=yes ;;
         --no-openvpn)    INSTALL_OPENVPN=no  ;;
+        --tak-ldap)      TAK_LDAP=yes ;;
         --use-ldap)
             [[ $# -ge 3 ]] || die "--use-ldap requires at least two arguments: <ldap-url> <base-dn>\n  Example: --use-ldap ldap://10.8.0.2:389 \"dc=example,dc=com\" \"cn=admin,dc=example,dc=com\" \"secret\""
             USE_LDAP=yes
@@ -321,6 +322,13 @@ Options:
                                Enable OpenLDAP authentication for the admin panel.
                                Login binds as uid=<username>,ou=people,<base-dn>
                                and requires membership of cn=tak-admin,ou=groups,<base-dn>.
+  --tak-ldap                   Also point TAK Server itself at that directory, so
+                               ATAK clients and the web admin authenticate against
+                               it. Requires --use-ldap. Defaults suit a stock
+                               OpenLDAP; override with LDAP_USER_RDN,
+                               LDAP_GROUP_RDN, LDAP_USER_OBJECTCLASS,
+                               LDAP_GROUP_OBJECTCLASS, LDAP_GROUP_PREFIX,
+                               LDAP_ADMIN_GROUP, LDAP_UPDATE_INTERVAL.
                                admin-dn and admin-pass are used for group lookup (recommended).
                                Example:
                                  --use-ldap ldap://10.8.0.2:389 "dc=example,dc=com" "cn=admin,dc=example,dc=com" "secret"
@@ -391,6 +399,19 @@ TAK_ADMIN_PASS="${TAK_ADMIN_PASS:-}"   # TAK web-admin password (auto-genereres)
 
 # OpenLDAP authentication for admin panel (use --use-ldap <url> <dn> to enable)
 USE_LDAP="${USE_LDAP:-no}"
+
+# Point TAK Server itself at the same directory (--tak-ldap). Separate from
+# --use-ldap, which only covers this panel: switching TAK Server's own
+# authentication is a change existing installs should opt into.
+# Defaults describe a stock OpenLDAP; override for a different layout.
+TAK_LDAP="${TAK_LDAP:-no}"
+LDAP_USER_RDN="${LDAP_USER_RDN:-ou=people}"
+LDAP_GROUP_RDN="${LDAP_GROUP_RDN:-ou=groups}"
+LDAP_USER_OBJECTCLASS="${LDAP_USER_OBJECTCLASS:-inetOrgPerson}"
+LDAP_GROUP_OBJECTCLASS="${LDAP_GROUP_OBJECTCLASS:-groupOfNames}"
+LDAP_GROUP_PREFIX="${LDAP_GROUP_PREFIX:-}"
+LDAP_ADMIN_GROUP="${LDAP_ADMIN_GROUP:-}"
+LDAP_UPDATE_INTERVAL="${LDAP_UPDATE_INTERVAL:-60}"
 LDAP_URL="${LDAP_URL:-}"
 LDAP_BASE_DN="${LDAP_BASE_DN:-}"
 LDAP_ADMIN_DN="${LDAP_ADMIN_DN:-}"
@@ -696,6 +717,100 @@ if [[ -f "$CORECONFIG" ]]; then
         success "CoreConfig.xml updated (DB password: ${DB_PASS})"
     else
         warn "CoreConfig.xml patch may not have applied — verify DB credentials manually in ${CORECONFIG}"
+    fi
+fi
+
+# ─── Point TAK Server at OpenLDAP (--tak-ldap) ───────────────────────────────
+# --use-ldap only covers the admin panel; TAK Server has its own authentication
+# in CoreConfig.xml, and shipping it unconfigured means ATAK clients and the web
+# admin never see the directory at all.
+#
+# The defaults describe a stock OpenLDAP (style="DS"): people under ou=people as
+# inetOrgPerson, groups under ou=groups as groupOfNames holding full member DNs.
+# Active Directory installs should pass style/objectclass overrides.
+if [[ "$TAK_LDAP" == "yes" && -f "$CORECONFIG" ]]; then
+    if [[ "$USE_LDAP" != "yes" ]]; then
+        die "--tak-ldap requires --use-ldap <url> <base-dn> [<bind-dn> <bind-pass>]"
+    fi
+    info "Configuring TAK Server authentication against ${LDAP_URL}..."
+
+    TAK_LDAP_URL="$LDAP_URL" \
+    TAK_LDAP_USERSTRING="uid={username},${LDAP_USER_RDN},${LDAP_BASE_DN}" \
+    TAK_LDAP_BIND_DN="$LDAP_ADMIN_DN" \
+    TAK_LDAP_BIND_PASS="$LDAP_ADMIN_PASS" \
+    TAK_LDAP_USER_RDN="$LDAP_USER_RDN" \
+    TAK_LDAP_GROUP_RDN="$LDAP_GROUP_RDN" \
+    TAK_LDAP_USER_OC="$LDAP_USER_OBJECTCLASS" \
+    TAK_LDAP_GROUP_OC="$LDAP_GROUP_OBJECTCLASS" \
+    TAK_LDAP_PREFIX="$LDAP_GROUP_PREFIX" \
+    TAK_LDAP_ADMIN_GROUP="$LDAP_ADMIN_GROUP" \
+    TAK_LDAP_INTERVAL="$LDAP_UPDATE_INTERVAL" \
+    python3 - "$CORECONFIG" << 'PYEOF'
+import os, re, sys
+from xml.sax.saxutils import quoteattr
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+xml = open(path, encoding="utf-8").read()
+
+BEGIN, END = "<!-- RagTAK LDAP begin -->", "<!-- RagTAK LDAP end -->"
+
+attrs = {
+    "url":            os.environ["TAK_LDAP_URL"],
+    "userstring":     os.environ["TAK_LDAP_USERSTRING"],
+    "style":          "DS",
+    "ldapSecurityType": "simple",
+    "userObjectClass":  os.environ["TAK_LDAP_USER_OC"],
+    "groupObjectClass": os.environ["TAK_LDAP_GROUP_OC"],
+    "userBaseRDN":      os.environ["TAK_LDAP_USER_RDN"],
+    "groupBaseRDN":     os.environ["TAK_LDAP_GROUP_RDN"],
+    # OpenLDAP returns DNs with a lowercase "cn=", which the stock regex — written
+    # for Active Directory's "CN=" — does not match, leaving every group nameless.
+    "groupNameExtractorRegex": "[Cc][Nn]=(.*?)(?:,|$)",
+    "nameAttr":       "cn",
+    "updateinterval": os.environ["TAK_LDAP_INTERVAL"],
+    "groupprefix":    os.environ["TAK_LDAP_PREFIX"],
+}
+for key, env in (("serviceAccountDN", "TAK_LDAP_BIND_DN"),
+                 ("serviceAccountCredential", "TAK_LDAP_BIND_PASS"),
+                 ("adminGroup", "TAK_LDAP_ADMIN_GROUP")):
+    if os.environ.get(env):
+        attrs[key] = os.environ[env]
+
+element = "\n".join(
+    ["\t\t" + BEGIN, "\t\t<ldap"]
+    + ["\t\t\t%s=%s" % (k, quoteattr(v)) for k, v in attrs.items()]
+    + ["\t\t/>", "\t\t" + END]
+)
+
+# Replace our previous block rather than stacking a second <ldap>, which the
+# schema forbids (maxOccurs="1").
+xml = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END), "", xml, flags=re.S)
+
+match = re.search(r"<auth\b[^>]*>", xml)
+if not match:
+    sys.exit("no <auth> element in CoreConfig.xml")
+
+# Make LDAP the default authentication type, replacing whatever was set.
+opening = match.group(0)
+if "default=" in opening:
+    new_opening = re.sub(r'default="[^"]*"', 'default="ldap"', opening)
+else:
+    new_opening = opening[:-1].rstrip() + ' default="ldap">'
+
+xml = xml[:match.start()] + new_opening + "\n" + element + xml[match.end():]
+
+ET.fromstring(xml)          # refuse to write anything malformed
+open(path, "w", encoding="utf-8").write(xml)
+print("CoreConfig.xml: <ldap> configured, auth default=ldap")
+PYEOF
+
+    if grep -q "RagTAK LDAP begin" "$CORECONFIG"; then
+        success "TAK Server will authenticate against ${LDAP_URL}"
+        info "  users:  uid=<name>,${LDAP_USER_RDN},${LDAP_BASE_DN}"
+        info "  groups: ${LDAP_GROUP_OBJECTCLASS} under ${LDAP_GROUP_RDN},${LDAP_BASE_DN}"
+    else
+        die "Failed to configure LDAP in ${CORECONFIG}"
     fi
 fi
 
