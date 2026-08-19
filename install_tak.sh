@@ -1053,6 +1053,19 @@ for _ks in "${CERT_DIR}"/*.jks; do
     esac
 done
 
+# The copies handed out to operators carry the same private keys, and cp left
+# them world readable.
+if [[ -d "$CERT_OUT_DIR" ]]; then
+    chmod 750 "$CERT_OUT_DIR" 2>/dev/null || true
+    for _c in "${CERT_OUT_DIR}"/*; do
+        [[ -f "$_c" ]] || continue
+        case "$(basename "$_c")" in
+            *.pem|truststore-*|fed-truststore.jks) chmod 644 "$_c" 2>/dev/null || true ;;
+            *)                                     chmod 640 "$_c" 2>/dev/null || true ;;
+        esac
+    done
+fi
+
 success "All certificates generated in: $CERT_DIR"
 
 # ─── 9. Let's Encrypt (optional) ─────────────────────────────────────────────
