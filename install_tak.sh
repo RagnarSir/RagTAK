@@ -2162,7 +2162,26 @@ if __name__ == '__main__':
     app.run(host=bind_host, port=port, debug=False)
 PYEOF
 
-# Write systemd service with all config baked in as environment variables
+# Secrets go in a root-only environment file, not into the unit. A unit in
+# /etc/systemd/system is world readable, and 'systemctl show takadmin -p
+# Environment' prints every Environment= line to any local user — which handed
+# out the LDAP bind password, the TAK and Mumble admin passwords and the panel's
+# session key to anyone with a shell on the box.
+TAKADMIN_ENV=/etc/takadmin.env
+install -m 600 /dev/null "$TAKADMIN_ENV"
+cat > "$TAKADMIN_ENV" << EOF
+TAKADMIN_PASS=${TAKADMIN_PASS}
+CERT_PASS=${CERT_PASS}
+SECRET_KEY=${TAKADMIN_SECRET}
+LDAP_ADMIN_PASS=${LDAP_ADMIN_PASS}
+TAK_ADMIN_PASS=${TAK_ADMIN_PASS}
+MUMBLE_SUPERUSER_PASS=${MUMBLE_SUPERUSER_PASS}
+MUMBLE_PASS=${MUMBLE_PASS}
+NODERED_PASS=${NODERED_PASS}
+EOF
+chmod 600 "$TAKADMIN_ENV"
+
+# Write systemd service with the non-secret config baked in
 cat > /etc/systemd/system/takadmin.service << EOF
 [Unit]
 Description=RagTak Admin Panel
@@ -2175,18 +2194,16 @@ WorkingDirectory=${TAKADMIN_DIR}
 ExecStart=/usr/bin/env python3 ${TAKADMIN_DIR}/takadmin.py
 Restart=on-failure
 RestartSec=5
+EnvironmentFile=${TAKADMIN_ENV}
 Environment=PG_SERVICE=${PG_SERVICE}
 Environment=PG_LABEL=PostgreSQL ${PG_VER}
 Environment=TAKADMIN_USER=Admin
-Environment=TAKADMIN_PASS=${TAKADMIN_PASS}
-Environment=CERT_PASS=${CERT_PASS}
 Environment=CERT_OUT_DIR=${CERT_OUT_DIR}
 Environment=PUBLIC_IP=${PUBLIC_IP}
 Environment=SERVER_IP=${SERVER_IP}
 Environment=DOMAIN=${DOMAIN}
 Environment=TAKADMIN_PORT=${TAKADMIN_PORT}
 Environment=BIND_HOST=0.0.0.0
-Environment=SECRET_KEY=${TAKADMIN_SECRET}
 Environment=OPENVPN_INSTALLED=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo 1 || echo "")
 Environment=VPN_IP=$([[ "${INSTALL_OPENVPN:-no}" == "yes" ]] && echo "${OPENVPN_SUBNET}.1" || echo "")
 Environment=STATE=${STATE:-NA}
@@ -2196,18 +2213,13 @@ Environment=ORGANIZATIONAL_UNIT=${ORGANIZATIONAL_UNIT:-TAK}
 Environment=LDAP_URL=${LDAP_URL}
 Environment=LDAP_BASE_DN=${LDAP_BASE_DN}
 Environment=LDAP_ADMIN_DN=${LDAP_ADMIN_DN}
-Environment=LDAP_ADMIN_PASS=${LDAP_ADMIN_PASS}
-Environment=TAK_ADMIN_PASS=${TAK_ADMIN_PASS}
 Environment=TAK_COT_PORT=${TAK_COT_PORT}
 Environment=TAK_ADMIN_PORT=${TAK_ADMIN_PORT}
 Environment=TAK_ENROLL_PORT=${TAK_ENROLL_PORT}
 Environment=RTSP_PORT=${RTSP_PORT}
 Environment=MUMBLE_PORT=${MUMBLE_PORT}
-Environment=MUMBLE_SUPERUSER_PASS=${MUMBLE_SUPERUSER_PASS}
-Environment=MUMBLE_PASS=${MUMBLE_PASS}
 Environment=NODERED_PORT=${NODERED_PORT}
 Environment=NODERED_USER=${NODERED_USER}
-Environment=NODERED_PASS=${NODERED_PASS}
 Environment=ADMIN_USER=${ADMIN_USER}
 Environment=SERVER_NAME=${SERVER_NAME}
 Environment=CERT_OUT_DIR=${CERT_OUT_DIR}

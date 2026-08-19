@@ -129,6 +129,7 @@ success "OpenVPN removed."
 # ─── 9. RagTAK Admin Panel ───────────────────────────────────────────────────
 info "Removing RagTAK admin panel..."
 rm -f /etc/systemd/system/takadmin.service
+rm -f /etc/takadmin.env
 rm -rf /opt/takadmin
 success "Admin panel removed."
 
