@@ -300,6 +300,7 @@ while [[ $# -gt 0 ]]; do
         --openvpn)       INSTALL_OPENVPN=yes ;;
         --no-openvpn)    INSTALL_OPENVPN=no  ;;
         --tak-ldap)      TAK_LDAP=yes ;;
+        --no-cert-enrollment) CERT_ENROLLMENT=no ;;
         --use-ldap)
             [[ $# -ge 3 ]] || die "--use-ldap requires at least two arguments: <ldap-url> <base-dn>\n  Example: --use-ldap ldap://10.8.0.2:389 \"dc=example,dc=com\" \"cn=admin,dc=example,dc=com\" \"secret\""
             USE_LDAP=yes
@@ -405,6 +406,12 @@ USE_LDAP="${USE_LDAP:-no}"
 # authentication is a change existing installs should opt into.
 # Defaults describe a stock OpenLDAP; override for a different layout.
 TAK_LDAP="${TAK_LDAP:-no}"
+
+# Certificate enrollment lets a client obtain its own certificate by
+# authenticating — the flow ATAK and WinTAK use to onboard a device. Without it
+# the only way in is a certificate handed out by hand, shared between devices.
+CERT_ENROLLMENT="${CERT_ENROLLMENT:-yes}"
+CERT_VALIDITY_DAYS="${CERT_VALIDITY_DAYS:-365}"
 LDAP_USER_RDN="${LDAP_USER_RDN:-ou=people}"
 LDAP_GROUP_RDN="${LDAP_GROUP_RDN:-ou=groups}"
 LDAP_USER_OBJECTCLASS="${LDAP_USER_OBJECTCLASS:-inetOrgPerson}"
@@ -877,6 +884,88 @@ popd > /dev/null
 
 # CoreConfig.xml needs fed-truststore.jks
 cp "${CERT_DIR}/truststore-root.jks" "${CERT_DIR}/fed-truststore.jks" 2>/dev/null || true
+
+# ─── Certificate enrollment ──────────────────────────────────────────────────
+# TAK signs client certificates on request, but only if certificateSigning is
+# configured — and it ships commented out, so /Marti/api/tls/config answers 500
+# and a device can never enroll. The CA key is on disk in PEM form; TAK wants it
+# in a keystore, which nothing else here produces.
+if [[ "$CERT_ENROLLMENT" == "yes" ]]; then
+    info "Preparing the CA signing keystore for certificate enrollment..."
+    SIGNING_P12="${CERT_DIR}/intermediate-signing.p12"
+    SIGNING_JKS="${CERT_DIR}/intermediate-signing.jks"
+    rm -f "$SIGNING_P12" "$SIGNING_JKS"
+    if openssl pkcs12 -export -in "${CERT_DIR}/ca.pem" -inkey "${CERT_DIR}/ca-do-not-share.key" \
+           -passin pass:"${CERT_PASS}" -name ca -out "$SIGNING_P12" -passout pass:"${CERT_PASS}" 2>/dev/null \
+       && keytool -importkeystore -noprompt \
+           -srckeystore "$SIGNING_P12" -srcstoretype PKCS12 -srcstorepass "${CERT_PASS}" \
+           -destkeystore "$SIGNING_JKS" -deststoretype JKS -deststorepass "${CERT_PASS}" >/dev/null 2>&1; then
+        chown tak:tak "$SIGNING_JKS" "$SIGNING_P12" 2>/dev/null || true
+        chmod 640 "$SIGNING_JKS" "$SIGNING_P12"
+        success "CA signing keystore created."
+    else
+        warn "Could not build the CA signing keystore — enrollment will stay disabled."
+        CERT_ENROLLMENT=no
+    fi
+fi
+
+if [[ "$CERT_ENROLLMENT" == "yes" && -f "$CORECONFIG" ]]; then
+    info "Enabling certificate enrollment in CoreConfig.xml..."
+    TAK_CS_PASS="$CERT_PASS" \
+    TAK_CS_DAYS="$CERT_VALIDITY_DAYS" \
+    TAK_CS_ORG="$ORGANIZATION" \
+    TAK_CS_OU="$ORGANIZATIONAL_UNIT" \
+    python3 - "$CORECONFIG" << 'PYEOF'
+import os, re, sys
+from xml.sax.saxutils import quoteattr
+import xml.etree.ElementTree as ET
+
+path = sys.argv[1]
+xml = open(path, encoding="utf-8").read()
+BEGIN, END = "<!-- RagTAK cert-signing begin -->", "<!-- RagTAK cert-signing end -->"
+
+block = "".join([
+    "    " + BEGIN + "\n",
+    '    <certificateSigning CA="TAKServer">\n',
+    "        <certificateConfig>\n",
+    "            <nameEntries>\n",
+    '                <nameEntry name="O" value=%s/>\n'  % quoteattr(os.environ["TAK_CS_ORG"]),
+    '                <nameEntry name="OU" value=%s/>\n' % quoteattr(os.environ["TAK_CS_OU"]),
+    "            </nameEntries>\n",
+    "        </certificateConfig>\n",
+    "        <TAKServerCAConfig\n",
+    '            keystore="JKS"\n',
+    '            keystoreFile="certs/files/intermediate-signing.jks"\n',
+    "            keystorePass=%s\n" % quoteattr(os.environ["TAK_CS_PASS"]),
+    "            validityDays=%s\n" % quoteattr(os.environ["TAK_CS_DAYS"]),
+    '            signatureAlg="SHA256WithRSA" />\n',
+    "    </certificateSigning>\n",
+    "    " + END + "\n",
+])
+
+xml = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END) + r"\n?", "", xml, flags=re.S)
+
+# The element belongs after <dissemination> and before <logging>; the shipped
+# file has a commented example in exactly that spot, so insert ahead of it.
+m = (re.search(r"[ \t]*<!--\s*\n?\s*<certificateSigning CA=\"\{", xml)
+     or re.search(r"[ \t]*<!--[^>]*certificateSigning", xml)
+     or re.search(r"[ \t]*<logging\b", xml))
+if not m:
+    sys.exit("no place found for certificateSigning")
+
+xml = xml[:m.start()] + block + xml[m.start():]
+ET.fromstring(xml)
+open(path, "w", encoding="utf-8").write(xml)
+print("certificateSigning enabled")
+PYEOF
+
+    if grep -q "RagTAK cert-signing begin" "$CORECONFIG"; then
+        success "Certificate enrollment enabled — devices can obtain their own certificate."
+        info "  ATAK/WinTAK: enroll against port ${TAK_ENROLL_PORT} with a username and password."
+    else
+        warn "Could not enable certificate enrollment in ${CORECONFIG}."
+    fi
+fi
 
 # Copy all certificates to $SCRIPT_DIR/certs/ for easy access
 CERT_OUT_DIR="${SCRIPT_DIR}/certs"
