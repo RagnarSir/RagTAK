@@ -411,7 +411,8 @@ LDAP_USER_OBJECTCLASS="${LDAP_USER_OBJECTCLASS:-inetOrgPerson}"
 LDAP_GROUP_OBJECTCLASS="${LDAP_GROUP_OBJECTCLASS:-groupOfNames}"
 LDAP_GROUP_PREFIX="${LDAP_GROUP_PREFIX:-}"
 LDAP_ADMIN_GROUP="${LDAP_ADMIN_GROUP:-}"
-LDAP_UPDATE_INTERVAL="${LDAP_UPDATE_INTERVAL:-60}"
+# Milliseconds, not seconds — per the TAK Server Configuration Guide.
+LDAP_UPDATE_INTERVAL="${LDAP_UPDATE_INTERVAL:-60000}"
 LDAP_URL="${LDAP_URL:-}"
 LDAP_BASE_DN="${LDAP_BASE_DN:-}"
 LDAP_ADMIN_DN="${LDAP_ADMIN_DN:-}"
@@ -738,8 +739,8 @@ if [[ "$TAK_LDAP" == "yes" && -f "$CORECONFIG" ]]; then
     TAK_LDAP_USERSTRING="uid={username},${LDAP_USER_RDN},${LDAP_BASE_DN}" \
     TAK_LDAP_BIND_DN="$LDAP_ADMIN_DN" \
     TAK_LDAP_BIND_PASS="$LDAP_ADMIN_PASS" \
-    TAK_LDAP_USER_RDN="$LDAP_USER_RDN" \
-    TAK_LDAP_GROUP_RDN="$LDAP_GROUP_RDN" \
+    TAK_LDAP_USER_RDN="${LDAP_USER_RDN},${LDAP_BASE_DN}" \
+    TAK_LDAP_GROUP_RDN="${LDAP_GROUP_RDN},${LDAP_BASE_DN}" \
     TAK_LDAP_USER_OC="$LDAP_USER_OBJECTCLASS" \
     TAK_LDAP_GROUP_OC="$LDAP_GROUP_OBJECTCLASS" \
     TAK_LDAP_PREFIX="$LDAP_GROUP_PREFIX" \
@@ -762,6 +763,9 @@ attrs = {
     "ldapSecurityType": "simple",
     "userObjectClass":  os.environ["TAK_LDAP_USER_OC"],
     "groupObjectClass": os.environ["TAK_LDAP_GROUP_OC"],
+    # Absolute DNs. TAK resolves these against the naming context in url; the
+    # url deliberately carries none, because TAK appends that context to
+    # userstring as well and would then search a doubled DN.
     "userBaseRDN":      os.environ["TAK_LDAP_USER_RDN"],
     "groupBaseRDN":     os.environ["TAK_LDAP_GROUP_RDN"],
     # OpenLDAP returns DNs with a lowercase "cn=", which the stock regex — written
