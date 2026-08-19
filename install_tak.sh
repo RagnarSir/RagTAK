@@ -411,6 +411,11 @@ LDAP_USER_OBJECTCLASS="${LDAP_USER_OBJECTCLASS:-inetOrgPerson}"
 LDAP_GROUP_OBJECTCLASS="${LDAP_GROUP_OBJECTCLASS:-groupOfNames}"
 LDAP_GROUP_PREFIX="${LDAP_GROUP_PREFIX:-}"
 LDAP_ADMIN_GROUP="${LDAP_ADMIN_GROUP:-}"
+# TAK performs no group lookup at all for password logins unless nested lookup
+# is on — it authenticates the user and reports no groups. Depth 3 covers
+# groups nested a couple of levels deep without walking the whole tree.
+LDAP_NESTED_LOOKUP="${LDAP_NESTED_LOOKUP:-true}"
+LDAP_NESTED_DEPTH="${LDAP_NESTED_DEPTH:-3}"
 # Milliseconds, not seconds — per the TAK Server Configuration Guide.
 LDAP_UPDATE_INTERVAL="${LDAP_UPDATE_INTERVAL:-60000}"
 LDAP_URL="${LDAP_URL:-}"
@@ -746,6 +751,8 @@ if [[ "$TAK_LDAP" == "yes" && -f "$CORECONFIG" ]]; then
     TAK_LDAP_PREFIX="$LDAP_GROUP_PREFIX" \
     TAK_LDAP_ADMIN_GROUP="$LDAP_ADMIN_GROUP" \
     TAK_LDAP_INTERVAL="$LDAP_UPDATE_INTERVAL" \
+    TAK_LDAP_NESTED="$LDAP_NESTED_LOOKUP" \
+    TAK_LDAP_NESTED_DEPTH="$LDAP_NESTED_DEPTH" \
     python3 - "$CORECONFIG" << 'PYEOF'
 import os, re, sys
 from xml.sax.saxutils import quoteattr
@@ -774,6 +781,9 @@ attrs = {
     "nameAttr":       "cn",
     "updateinterval": os.environ["TAK_LDAP_INTERVAL"],
     "groupprefix":    os.environ["TAK_LDAP_PREFIX"],
+    # Without this TAK never queries the group base for a password login.
+    "nestedGroupLookup":         os.environ["TAK_LDAP_NESTED"],
+    "nestedGroupMaxSearchDepth": os.environ["TAK_LDAP_NESTED_DEPTH"],
 }
 for key, env in (("serviceAccountDN", "TAK_LDAP_BIND_DN"),
                  ("serviceAccountCredential", "TAK_LDAP_BIND_PASS"),
