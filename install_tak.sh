@@ -1042,7 +1042,16 @@ fi
 chown -R tak:tak "$CERT_DIR" 2>/dev/null || chown -R root:root "$CERT_DIR"
 chmod 640 "${CERT_DIR}"/*.p12 2>/dev/null || true
 chmod 644 "${CERT_DIR}"/*.pem 2>/dev/null || true
-chmod 644 "${CERT_DIR}"/*.jks 2>/dev/null || true
+# Only truststores are safe to leave world readable. Every other keystore here
+# holds a private key — the CA signing key, the server key, the client keys —
+# and a blanket 644 handed all of them to any local user.
+for _ks in "${CERT_DIR}"/*.jks; do
+    [[ -f "$_ks" ]] || continue
+    case "$(basename "$_ks")" in
+        truststore-*|fed-truststore.jks) chmod 644 "$_ks" 2>/dev/null || true ;;
+        *)                               chmod 640 "$_ks" 2>/dev/null || true ;;
+    esac
+done
 
 success "All certificates generated in: $CERT_DIR"
 
