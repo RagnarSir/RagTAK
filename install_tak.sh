@@ -1700,38 +1700,88 @@ def dl_browser():
                      as_attachment=True, download_name='tak-browser-bundle.zip')
 
 
-def _connection_package(client_cert=None, desc=None, out_name=None):
-    """Build a connection data package using TAK's own make-connection-package.sh.
+def _connection_package(client_cert=None, desc=None, folder=None):
+    """Build a connection data package in the layout ATAK and iTAK accept here.
 
-    The hand-rolled builder this replaces wrote the manifest to
-    <name>-datapackage/manifest.xml with a server.pref beside it. TAK puts the
-    manifest in MANIFEST/manifest.xml with config.pref at the zip root, and iTAK
-    rejects anything else with "the format of this configuration could not be
-    read". Using the script that ships with the server keeps the format correct
-    as it changes between releases, instead of guessing at it here.
+    Deliberately not make-connection-package.sh: that writes MANIFEST/manifest.xml
+    with config.pref at the zip root and per-stream caLocation0 entries, and iTAK
+    rejects it with "the format of this configuration could not be read". Packages
+    known to work on these devices put manifest.xml and server.pref inside a
+    single folder and use the global cert keys, so that is what is built.
 
     Omitting client_cert produces an enrollment package: truststore only, with
-    the flags that make the client ask for a username and password and collect
+    the flags that make the device ask for a username and password and collect
     its own certificate.
     """
-    script = Path(CERTS_SCRIPT) / 'make-connection-package.sh'
-    trust  = Path(CERT_OUT_DIR) / 'truststore-root.p12'
-    if not script.exists() or not trust.exists():
+    out    = Path(CERT_OUT_DIR)
+    trust  = out / 'truststore-root.p12'
+    if not trust.exists():
         return None
+    folder = folder or 'tak-connection'
+    desc   = desc or HOST
 
-    with tempfile.TemporaryDirectory() as tmp:
-        out = Path(tmp) / (out_name or 'connection.zip')
-        cmd = ['bash', str(script),
-               '-s', HOST, '-p', str(TAK_COT_PORT),
-               '-t', str(trust), '-T', CERT_PASS,
-               '-n', desc or HOST, '-o', str(out)]
+    entries = ['server.pref', trust.name]
+    if client_cert:
+        entries.append(client_cert.name)
+
+    contents = '\n'.join(
+        f'    <Content ignore="false" zipEntry="{folder}/{e}"/>' for e in entries)
+    manifest = (
+        f'<MissionPackageManifest version="2">\n'
+        f'  <Configuration>\n'
+        f'    <Parameter name="uid" value="{uuid.uuid4()}"/>\n'
+        f'    <Parameter name="name" value="{desc}"/>\n'
+        f'    <Parameter name="onReceiveDelete" value="true"/>\n'
+        f'  </Configuration>\n'
+        f'  <Contents>\n{contents}\n  </Contents>\n'
+        f'</MissionPackageManifest>\n'
+    )
+
+    stream = [
+        '    <entry key="count" class="class java.lang.Integer">1</entry>',
+        f'    <entry key="description0" class="class java.lang.String">{desc}</entry>',
+        '    <entry key="enabled0" class="class java.lang.Boolean">true</entry>',
+        f'    <entry key="connectString0" class="class java.lang.String">{HOST}:{TAK_COT_PORT}:ssl</entry>',
+    ]
+    if not client_cert:
+        stream += [
+            '    <entry key="useAuth0" class="class java.lang.Boolean">true</entry>',
+            '    <entry key="enrollForCertificateWithTrust0" class="class java.lang.Boolean">true</entry>',
+            '    <entry key="cacheCreds0" class="class java.lang.String">Cache credentials</entry>',
+        ]
+
+    app_prefs = [
+        '    <entry key="displayServerConnectionWidget" class="class java.lang.Boolean">true</entry>',
+        f'    <entry key="caLocation" class="class java.lang.String">cert/{trust.name}</entry>',
+        f'    <entry key="caPassword" class="class java.lang.String">{CERT_PASS}</entry>',
+    ]
+    if client_cert:
+        app_prefs += [
+            f'    <entry key="certificateLocation" class="class java.lang.String">cert/{client_cert.name}</entry>',
+            f'    <entry key="clientPassword" class="class java.lang.String">{CERT_PASS}</entry>',
+        ]
+
+    server_pref = (
+        "<?xml version='1.0' encoding='ASCII' standalone='yes'?>\n"
+        "<preferences>\n"
+        '  <preference version="1" name="cot_streams">\n'
+        + '\n'.join(stream) + '\n'
+        "  </preference>\n"
+        '  <preference version="1" name="com.atakmap.app_preferences">\n'
+        + '\n'.join(app_prefs) + '\n'
+        "  </preference>\n"
+        "</preferences>\n"
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f'{folder}/manifest.xml', manifest)
+        z.writestr(f'{folder}/server.pref', server_pref)
+        z.write(trust, f'{folder}/{trust.name}')
         if client_cert:
-            cmd += ['-c', str(client_cert), '-C', CERT_PASS]
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=tmp)
-        if r.returncode != 0 or not out.exists():
-            app.logger.error('make-connection-package.sh failed: %s', r.stderr.strip())
-            return None
-        return io.BytesIO(out.read_bytes())
+            z.write(client_cert, f'{folder}/{client_cert.name}')
+    buf.seek(0)
+    return buf
 
 
 def _build_atak_datapackage(username):
@@ -1740,12 +1790,12 @@ def _build_atak_datapackage(username):
     if not cert.exists():
         return None
     return _connection_package(client_cert=cert, desc=f'{HOST} ({username})',
-                               out_name=f'{username}-datapackage.zip')
+                               folder=username)
 
 
 def _build_enroll_datapackage():
     """Connection package with the truststore only — the device enrolls itself."""
-    return _connection_package(desc=HOST, out_name='enroll-datapackage.zip')
+    return _connection_package(desc=HOST, folder='tak-enroll')
 
 
 @app.route('/download/bundle/enroll')
