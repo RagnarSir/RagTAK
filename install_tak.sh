@@ -1752,6 +1752,65 @@ def _build_atak_datapackage(username):
     return buf
 
 
+def _build_enroll_datapackage():
+    """Build a data package carrying only the CA truststore and the server entry.
+
+    This is the bootstrap for certificate enrollment: the client gets enough to
+    trust the server, then authenticates with a directory account and receives
+    its own certificate. Shipping a client certificate here would defeat that —
+    everyone would share one identity.
+    """
+    out = Path(CERT_OUT_DIR)
+    folder = 'enroll-datapackage'
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        ts = out / 'truststore-root.p12'
+        if ts.exists():
+            z.write(ts, f'{folder}/truststore-root.p12')
+        manifest = (
+            f'<MissionPackageManifest version="2">\n'
+            f'  <Configuration>\n'
+            f'    <Parameter name="uid" value="{uuid.uuid4()}"/>\n'
+            f'    <Parameter name="name" value="TAK Server Enrollment"/>\n'
+            f'  </Configuration>\n'
+            f'  <Contents>\n'
+            f'    <Content zipEntry="{folder}/truststore-root.p12" ignore="false">\n'
+            f'      <Parameter name="location" value="/cert/truststore-root.p12"/>\n'
+            f'    </Content>\n'
+            f'    <Content zipEntry="{folder}/server.pref" ignore="false"/>\n'
+            f'  </Contents>\n'
+            f'</MissionPackageManifest>\n'
+        )
+        server_pref = (
+            f"<?xml version='1.0' standalone='yes'?>\n"
+            f"<preferences>\n"
+            f"  <preference version=\"1\" name=\"cot_streams\">\n"
+            f"    <entry key=\"count\" class=\"class java.lang.Integer\">1</entry>\n"
+            f"    <entry key=\"description0\" class=\"class java.lang.String\">{HOST}</entry>\n"
+            f"    <entry key=\"enabled0\" class=\"class java.lang.Boolean\">true</entry>\n"
+            f"    <entry key=\"connectString0\" class=\"class java.lang.String\">{HOST}:8089:ssl</entry>\n"
+            f"    <entry key=\"useAuth0\" class=\"class java.lang.Boolean\">true</entry>\n"
+            f"    <entry key=\"enrollForCertificateWithTrust0\" class=\"class java.lang.Boolean\">true</entry>\n"
+            f"  </preference>\n"
+            f"  <preference version=\"1\" name=\"com.atakmap.app_preferences\">\n"
+            f"    <entry key=\"caLocation\" class=\"class java.lang.String\">/cert/truststore-root.p12</entry>\n"
+            f"    <entry key=\"caPassword\" class=\"class java.lang.String\">{CERT_PASS}</entry>\n"
+            f"  </preference>\n"
+            f"</preferences>\n"
+        )
+        z.writestr(f'{folder}/manifest.xml', manifest)
+        z.writestr(f'{folder}/server.pref', server_pref)
+    buf.seek(0)
+    return buf
+
+
+@app.route('/download/bundle/enroll')
+@login_required
+def dl_enroll():
+    return send_file(_build_enroll_datapackage(), mimetype='application/zip',
+                     as_attachment=True, download_name='enroll-datapackage.zip')
+
+
 @app.route('/download/bundle/atak/<username>')
 @login_required
 def dl_atak(username):
@@ -1770,6 +1829,8 @@ def share_create():
     if share_type == 'atak':
         if not re.fullmatch(r'[a-zA-Z0-9_-]{1,32}', arg):
             return jsonify(error='Invalid username'), 400
+    elif share_type == 'enroll':
+        arg = ''
     elif share_type == 'file':
         out    = Path(CERT_OUT_DIR).resolve()
         target = (out / arg).resolve()
@@ -1811,6 +1872,9 @@ def share_download(token):
         buf = _build_atak_datapackage(arg)
         return send_file(buf, mimetype='application/zip',
                          as_attachment=True, download_name=f'{arg}-datapackage.zip')
+    elif share_type == 'enroll':
+        return send_file(_build_enroll_datapackage(), mimetype='application/zip',
+                         as_attachment=True, download_name='enroll-datapackage.zip')
     elif share_type == 'file':
         out    = Path(CERT_OUT_DIR).resolve()
         target = (out / arg).resolve()
@@ -2333,9 +2397,29 @@ T_DL = page('''
 </div>
 {% endif %}
 
+<div class="section-title">Enrollment</div>
+<div class="card">
+  <div class="card-header">Trust only — the device gets its own certificate</div>
+  <table>
+    <thead><tr><th>Bundle</th><th>Download</th><th>Mobile QR</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>enroll-datapackage.zip<br>
+            <small style="color:var(--muted)">Carries the CA truststore and the server
+            entry, no client certificate. The device signs in with a directory
+            account and is issued its own certificate, so each user keeps a
+            separate identity.</small></td>
+        <td><a href="/download/bundle/enroll" download>&#8659; Download</a></td>
+        <td><button class="btn btn-secondary" style="padding:.3rem .7rem;font-size:.8rem"
+                    onclick="showQr(&quot;enroll&quot;,&quot;&quot;)">&#9636; QR</button></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
 <div class="section-title">Device Bundles</div>
 <div class="card">
-  <div class="card-header">TAK certificate bundles per device</div>
+  <div class="card-header">Pre-issued certificates — shared between devices</div>
   <table>
     <thead><tr>
       <th>User</th><th>ATAK Bundle (cert + README)</th><th>Mobile QR</th>
@@ -2343,7 +2427,7 @@ T_DL = page('''
     <tbody>
     {% for fn in p12s %}
       {% set u = fn[:-4] %}
-      {% if u != 'takserver' %}
+      {% if u != 'takserver' and not u.startswith('truststore') %}
       <tr>
         <td>{{ u }}</td>
         <td><a href="/download/bundle/atak/{{ u }}" download>&#8659; tak-atak-{{ u }}.zip</a></td>
