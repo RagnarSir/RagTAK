@@ -2,16 +2,17 @@
 # =============================================================================
 #  RagTAK -- TAK Server Installation Script
 #  Version   : 2.0
-#  Target OS : Ubuntu 22.04 / 24.04, Debian 11/12, Linux Mint 21+
-#  Installs  : TAK Server 5.7, PostgreSQL 15, Full PKI, MediaMTX, Mumble,
-#              Node-RED, RagTAK Admin Panel, OpenVPN (default on), UFW firewall
+#  Target OS : Ubuntu 22.04 / 24.04 / 26.04, Debian 11/12, Linux Mint 21+
+#  Installs  : TAK Server, PostgreSQL (version read from the .deb), Full PKI,
+#              MediaMTX, Mumble, Node-RED, RagTAK Admin Panel, OpenVPN
+#              (default on), UFW firewall
 #
 # =============================================================================
 #  OVERVIEW
 # =============================================================================
 #
 #  This script performs a fully automated TAK Server installation including:
-#    - PostgreSQL 15 + PostGIS database setup
+#    - PostgreSQL + PostGIS database setup
 #    - TAK Server .deb installation and configuration
 #    - Full PKI certificate generation (Root CA, server, admin, 5 client certs)
 #    - Automatic Firefox certificate import (desktop installs)
@@ -246,7 +247,7 @@
 #    sudo tail -f /opt/tak/logs/takserver-messaging.log
 #
 #  Database connection errors:
-#    sudo systemctl status postgresql@15-main
+#    sudo systemctl status postgresql@<version>-main
 #    sudo -u postgres psql -c "\du martiuser"
 #
 #  Certificate errors in browser:
@@ -511,6 +512,16 @@ fi
 [[ -f "$TAK_DEB_PATH" ]] || die "TAK Server .deb not found at: $TAK_DEB_PATH"
 info "TAK Server package: $(basename "$TAK_DEB_PATH")"
 
+# ─── PostgreSQL version ──────────────────────────────────────────────────────
+# TAK 5.7 depends on postgresql-15, TAK 5.8 on postgresql-18. Read the required
+# major version straight from the .deb instead of hardcoding it, so the same
+# installer works across TAK releases.
+PG_VER="${PG_VER:-$(dpkg-deb -f "$TAK_DEB_PATH" Depends 2>/dev/null \
+    | grep -oE 'postgresql-[0-9]+' | grep -oE '[0-9]+' | head -1)}"
+PG_VER="${PG_VER:-15}"
+PG_SERVICE="postgresql@${PG_VER}-main"
+info "TAK Server requires PostgreSQL ${PG_VER}."
+
 # ─── 2. Stop Docker containers that conflict with TAK ports ──────────────────
 if command -v docker &>/dev/null; then
     info "Checking for Docker port conflicts..."
@@ -524,35 +535,49 @@ if command -v docker &>/dev/null; then
     done
 fi
 
-# ─── 3. Add PostgreSQL 15 repo (before first apt-get update) ─────────────────
-# TAK 5.7 requires PG15. Ubuntu 24.04 ships PG16.
+# ─── 3. Make sure the required PostgreSQL version is installable ─────────────
+# Newer Ubuntu releases ship the version TAK needs (26.04 → PG18), older ones
+# do not (24.04 ships PG16, TAK 5.7 needs PG15). Only add the PGDG repo when
+# the distro cannot provide it — an unnecessary third-party repo is a liability.
 # Linux Mint uses its own codename — read Ubuntu base from /etc/os-release.
 # Ensure lsb-release is available on minimal Debian installs before we need it.
 apt-get install -y --no-install-recommends lsb-release gnupg curl 2>/dev/null || true
 
-UBUNTU_CODENAME="$(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release 2>/dev/null \
-    || grep -oP '(?<=DISTRIB_CODENAME=).*' /etc/upstream-release/lsb-release 2>/dev/null \
-    || lsb_release -cs)"
-info "Ubuntu base codename: ${UBUNTU_CODENAME}"
-
-curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-    | gpg --batch --yes --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
-
-echo "deb https://apt.postgresql.org/pub/repos/apt ${UBUNTU_CODENAME}-pgdg main" \
-    > /etc/apt/sources.list.d/pgdg.list
-
-# ─── 4. Install dependencies ──────────────────────────────────────────────────
 info "Updating package lists..."
 apt-get update -qq
+
+# Do not use 'grep -q' here. This script runs with 'pipefail', and grep -q
+# closes the pipe on its first match, so apt-cache dies of SIGPIPE and the
+# pipeline returns 141 — making the test fail precisely when the package IS
+# available.
+PG_CANDIDATE="$(apt-cache policy "postgresql-${PG_VER}" 2>/dev/null \
+    | awk -F': ' '/Candidate:/ {c=$2} END {print c}')" || PG_CANDIDATE=""
+if [[ -n "$PG_CANDIDATE" && "$PG_CANDIDATE" != "(none)" ]]; then
+    info "postgresql-${PG_VER} ${PG_CANDIDATE} available from the distribution repositories."
+else
+    UBUNTU_CODENAME="$(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release 2>/dev/null \
+        || grep -oP '(?<=DISTRIB_CODENAME=).*' /etc/upstream-release/lsb-release 2>/dev/null \
+        || lsb_release -cs)"
+    info "postgresql-${PG_VER} not in distro repos — adding PGDG repo for ${UBUNTU_CODENAME}."
+
+    curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        | gpg --batch --yes --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+
+    echo "deb https://apt.postgresql.org/pub/repos/apt ${UBUNTU_CODENAME}-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list
+    apt-get update -qq
+fi
+
+# ─── 4. Install dependencies ──────────────────────────────────────────────────
 
 info "Installing base tools and Java 17..."
 apt-get install -y \
     openjdk-17-jdk ufw curl wget unzip ffmpeg openssl \
     net-tools lsof gnupg lsb-release 2>/dev/null
 
-info "Installing PostgreSQL 15 + PostGIS 3..."
+info "Installing PostgreSQL ${PG_VER} + PostGIS 3..."
 apt-get install -y \
-    postgresql-15 postgresql-15-postgis-3 postgresql-client-15 2>/dev/null
+    "postgresql-${PG_VER}" "postgresql-${PG_VER}-postgis-3" "postgresql-client-${PG_VER}" 2>/dev/null
 
 # Set Java 17 as default and export JAVA_HOME
 JAVA17_PATH="$(update-alternatives --list java 2>/dev/null | grep java-17 | head -1 || true)"
@@ -565,27 +590,29 @@ fi
 export PATH="$JAVA_HOME/bin:$PATH"
 success "Java: $(java -version 2>&1 | head -1)  (JAVA_HOME=$JAVA_HOME)"
 
-# ─── 5. Start PostgreSQL 15 on port 5432 ─────────────────────────────────────
-info "Configuring PostgreSQL 15 on port 5432..."
+# ─── 5. Start PostgreSQL ${PG_VER} on port 5432 ──────────────────────────────
+info "Configuring PostgreSQL ${PG_VER} on port 5432..."
 
-# Stop PG16 if it exists (occupies 5432 by default)
-if pg_lsclusters 2>/dev/null | grep -q "^16 "; then
-    info "  Stopping PG16 cluster (port conflict)..."
-    pg_ctlcluster 16 main stop 2>/dev/null || true
-    systemctl stop postgresql@16-main 2>/dev/null || true
-    systemctl disable postgresql@16-main 2>/dev/null || true
-fi
+# Stop any other cluster — whichever version the distro installed by default
+# will otherwise be sitting on port 5432.
+while read -r _other _cluster _rest; do
+    [[ -z "$_other" || "$_other" == "$PG_VER" ]] && continue
+    info "  Stopping PG${_other} cluster (port conflict)..."
+    pg_ctlcluster "$_other" "$_cluster" stop 2>/dev/null || true
+    systemctl stop "postgresql@${_other}-${_cluster}" 2>/dev/null || true
+    systemctl disable "postgresql@${_other}-${_cluster}" 2>/dev/null || true
+done < <(pg_lsclusters --no-header 2>/dev/null || true)
 
-# Pin PG15 to port 5432
-PG15_CONF="/etc/postgresql/15/main/postgresql.conf"
-[[ -f "$PG15_CONF" ]] && sed -i "s/^#*port = .*/port = 5432/" "$PG15_CONF"
+# Pin our cluster to port 5432
+PG_CONF="/etc/postgresql/${PG_VER}/main/postgresql.conf"
+[[ -f "$PG_CONF" ]] && sed -i "s/^#*port = .*/port = 5432/" "$PG_CONF"
 
-systemctl enable postgresql@15-main --now
+systemctl enable "$PG_SERVICE" --now
 sleep 5
-systemctl is-active --quiet postgresql@15-main || die "PostgreSQL 15 failed to start."
-success "PostgreSQL 15 running on port 5432."
+systemctl is-active --quiet "$PG_SERVICE" || die "PostgreSQL ${PG_VER} failed to start."
+success "PostgreSQL ${PG_VER} running on port 5432."
 
-export PGCLUSTER=15/main
+export PGCLUSTER="${PG_VER}/main"
 export PGPORT=5432
 
 # ─── 6. Install TAK Server .deb ──────────────────────────────────────────────
@@ -615,8 +642,8 @@ success "TAK Server installed to $TAK_DIR"
 # We do it directly instead.
 info "Setting up TAK database..."
 
-# Restart PG15 in case TAK's post-install script touched it
-systemctl restart postgresql@15-main
+# Restart the cluster in case TAK's post-install script touched it
+systemctl restart "$PG_SERVICE"
 sleep 5
 
 # Wait for socket
@@ -625,7 +652,7 @@ for i in {1..20}; do
     [[ -S "$PG_SOCKET" ]] && break
     sleep 1
 done
-[[ -S "$PG_SOCKET" ]] || die "PostgreSQL socket not available — check: journalctl -u postgresql@15-main"
+[[ -S "$PG_SOCKET" ]] || die "PostgreSQL socket not available — check: journalctl -u $PG_SERVICE"
 
 # Create user and database (always sync password in case deb set a different one)
 sudo -u postgres psql -tc "SELECT 1 FROM pg_user WHERE usename='${DB_USER}'" \
@@ -640,14 +667,14 @@ sudo -u postgres psql -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS postgis_t
 sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
 
 # Allow martiuser to connect via pg_hba.conf
-PG15_HBA="/etc/postgresql/15/main/pg_hba.conf"
-if ! grep -q "$DB_USER" "$PG15_HBA"; then
-    cat >> "$PG15_HBA" << EOF
+PG_HBA="/etc/postgresql/${PG_VER}/main/pg_hba.conf"
+if ! grep -q "$DB_USER" "$PG_HBA"; then
+    cat >> "$PG_HBA" << EOF
 # TAK Server
 host    ${DB_NAME}      ${DB_USER}      127.0.0.1/32            md5
 host    ${DB_NAME}      ${DB_USER}      ::1/128                 md5
 EOF
-    systemctl reload postgresql@15-main
+    systemctl reload "$PG_SERVICE"
     sleep 2
 fi
 
@@ -1108,7 +1135,8 @@ HOST         = VPN_IP if os.environ.get('OPENVPN_INSTALLED') and VPN_IP else SER
 
 SERVICES = [
     ('takserver',          'TAK Server'),
-    ('postgresql@15-main', 'PostgreSQL 15'),
+    (os.environ.get('PG_SERVICE', 'postgresql@15-main'),
+     os.environ.get('PG_LABEL',   'PostgreSQL')),
     ('mediamtx',           'MediaMTX'),
     ('mumble-server',      'Mumble'),
     ('node-red',           'Node-RED'),
@@ -2147,6 +2175,8 @@ WorkingDirectory=${TAKADMIN_DIR}
 ExecStart=/usr/bin/env python3 ${TAKADMIN_DIR}/takadmin.py
 Restart=on-failure
 RestartSec=5
+Environment=PG_SERVICE=${PG_SERVICE}
+Environment=PG_LABEL=PostgreSQL ${PG_VER}
 Environment=TAKADMIN_USER=Admin
 Environment=TAKADMIN_PASS=${TAKADMIN_PASS}
 Environment=CERT_PASS=${CERT_PASS}
@@ -2414,7 +2444,7 @@ echo "============================================================"
 echo ""
 echo -e "  ${CYAN}Service status${NC}"
 echo "    TAK Server : $(systemctl is-active takserver 2>/dev/null || echo 'unknown')"
-echo "    PostgreSQL : $(systemctl is-active postgresql@15-main 2>/dev/null || echo 'unknown')"
+echo "    PostgreSQL : $(systemctl is-active "$PG_SERVICE" 2>/dev/null || echo 'unknown')"
 echo "    Mumble     : $(systemctl is-active mumble-server 2>/dev/null || echo 'unknown')"
 echo "    Node-RED   : $(systemctl is-active node-red 2>/dev/null || echo 'unknown')"
 [[ -z "${SKIP_MEDIAMTX:-}" ]] && \

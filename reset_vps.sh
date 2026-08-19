@@ -50,11 +50,19 @@ rm -rf /opt/tak
 userdel -r tak 2>/dev/null || true
 success "TAK Server removed."
 
-# ─── 3. PostgreSQL 15 ────────────────────────────────────────────────────────
-info "Removing PostgreSQL 15..."
-systemctl stop "postgresql@15-main" 2>/dev/null || true
-apt-get purge -y "postgresql-15" "postgresql-15-postgis-3" \
-    "postgresql-client-15" "postgresql-common" 2>/dev/null || true
+# ─── 3. PostgreSQL ───────────────────────────────────────────────────────────
+# The version depends on the TAK release (5.7 → PG15, 5.8 → PG18), so remove
+# every postgresql major that is actually installed rather than a hardcoded one.
+info "Removing PostgreSQL..."
+PG_INSTALLED="$(dpkg-query -W -f='${Package}\n' 'postgresql-[0-9]*' 2>/dev/null \
+    | grep -oE 'postgresql-[0-9]+$' | grep -oE '[0-9]+$' | sort -u)"
+for _v in $PG_INSTALLED; do
+    info "  Removing PostgreSQL ${_v}..."
+    systemctl stop "postgresql@${_v}-main" 2>/dev/null || true
+    apt-get purge -y "postgresql-${_v}" "postgresql-${_v}-postgis-3" \
+        "postgresql-client-${_v}" 2>/dev/null || true
+done
+apt-get purge -y "postgresql-common" 2>/dev/null || true
 rm -rf /etc/postgresql /var/lib/postgresql /var/log/postgresql
 # Remove the postgres apt source we added
 rm -f /etc/apt/sources.list.d/pgdg.list
